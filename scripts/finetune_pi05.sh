@@ -1,0 +1,24 @@
+#!/bin/bash
+
+# For RTX 4000 series doesn't support faster communication braodband via P2P or IB
+export NCCL_P2P_DISABLE="1"
+export NCCL_IB_DISABLE="1"
+
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+
+python src/lerobot/scripts/lerobot_train.py\
+    --dataset.repo_id="sorel/record_1212" \
+    --dataset.root="/home/bao/workspace/lerobot/tmp" \
+    --policy.normalization_mapping='{"ACTION": "MEAN_STD", "STATE": "MEAN_STD", "VISUAL": "IDENTITY"}' \
+    --policy.type=pi05 \
+    --output_dir="./outputs/pi05_training" \
+    --job_name="pi05_training" \
+    --policy.repo_id="finetune_pi05" \
+    --policy.pretrained_path=lerobot/pi05_base \
+    --policy.compile_model=true \
+    --policy.gradient_checkpointing=true \
+    --wandb.enable=true \
+    --policy.dtype=bfloat16 \
+    --steps=3000 \
+    --policy.device=cuda \
+    --batch_size=8
