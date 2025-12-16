@@ -7,8 +7,8 @@ export NCCL_IB_DISABLE="1"
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
 python src/lerobot/scripts/lerobot_train.py\
-    --dataset.repo_id="sorel/record_1212" \
-    --dataset.root="/home/bao/workspace/lerobot/tmp" \
+    --dataset.repo_id="record_1212" \
+    --dataset.root="/home/bao/workspace/lerobot/tmp/record_1212" \
     --policy.normalization_mapping='{"ACTION": "MEAN_STD", "STATE": "MEAN_STD", "VISUAL": "IDENTITY"}' \
     --policy.type=pi05 \
     --output_dir="./outputs/pi05_training" \
