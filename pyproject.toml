@@ -88,7 +88,11 @@ dependencies = [
     # Support dependencies
     "deepdiff>=7.0.1,<9.0.0",
     "imageio[ffmpeg]>=2.34.0,<3.0.0",
+<<<<<<< HEAD
     "rich>=13.6.0,<14.0.0",
+=======
+    "rich==14.2.0",
+>>>>>>> 893d823 (feat(scripts): update dataset paths and add augment dataset script; enhance training logging)
     "termcolor>=2.4.0,<4.0.0",
 ]
 

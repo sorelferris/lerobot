@@ -22,6 +22,7 @@ from typing import Any
 
 import torch
 from accelerate import Accelerator
+from rich.progress import track
 from termcolor import colored
 from torch.optim import Optimizer
 from tqdm import tqdm
@@ -406,11 +407,15 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             f"Start offline training on a fixed dataset, with effective batch size: {effective_batch_size}"
         )
 
-    for _ in range(step, cfg.steps):
+    for _ in track(range(step, cfg.steps)):
         start_time = time.perf_counter()
         batch = next(dl_iter)
         batch = preprocessor(batch)
         train_tracker.dataloading_s = time.perf_counter() - start_time
+<<<<<<< HEAD
+=======
+        print("start update policy")
+>>>>>>> 893d823 (feat(scripts): update dataset paths and add augment dataset script; enhance training logging)
         train_tracker, output_dict = update_policy(
             train_tracker,
             policy,
