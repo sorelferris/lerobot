@@ -21,6 +21,7 @@ from typing import Any
 
 import torch
 from accelerate import Accelerator
+from rich.progress import track
 from termcolor import colored
 from torch.optim import Optimizer
 
@@ -329,12 +330,12 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     if is_main_process:
         logging.info("Start offline training on a fixed dataset")
 
-    for _ in range(step, cfg.steps):
+    for _ in track(range(step, cfg.steps)):
         start_time = time.perf_counter()
         batch = next(dl_iter)
         batch = preprocessor(batch)
         train_tracker.dataloading_s = time.perf_counter() - start_time
-
+        print("start update policy")
         train_tracker, output_dict = update_policy(
             train_tracker,
             policy,
