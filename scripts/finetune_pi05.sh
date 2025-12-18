@@ -7,9 +7,10 @@
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 export HF_ENDPOINT="https://hf-mirror.com"
 
+rm -rf ./outputs/pi05_training
 python src/lerobot/scripts/lerobot_train.py\
     --dataset.repo_id="record_1212" \
-    --dataset.root="/root/lerobot/tmp/record_1212" \
+    --dataset.root="./tmp/record_1212" \
     --policy.type=pi05 \
     --output_dir="./outputs/pi05_training" \
     --job_name="pi05_training" \
