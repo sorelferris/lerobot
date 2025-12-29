@@ -4,18 +4,19 @@
 # export NCCL_P2P_DISABLE="1"
 # export NCCL_IB_DISABLE="1"
 
-conda activate lerobot
 
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 export HF_ENDPOINT="https://hf-mirror.com"
 
-rm -rf "/root/autodl-tmp/outputs/pi05_train"
+output_dir="./outputs/pi05_train"
+
+rm -rf $output_dir
 
 python src/lerobot/scripts/lerobot_train.py\
     --dataset.repo_id="record_1212" \
     --dataset.root="./tmp/record_1212" \
     --policy.type=pi05 \
-    --output_dir="/root/autodl-tmp/outputs/pi05_train" \
+    --output_dir=$output_dir \
     --job_name="pi05_train" \
     --policy.repo_id="finetune_pi05" \
     --policy.pretrained_path=lerobot/pi05_base \
@@ -23,6 +24,7 @@ python src/lerobot/scripts/lerobot_train.py\
     --policy.gradient_checkpointing=true \
     --wandb.enable=false \
     --policy.dtype=bfloat16 \
+    --policy.normalization_mapping='{"ACTION": "MEAN_STD", "STATE": "MEAN_STD", "VISUAL": "IDENTITY"}' \
     --steps=3000 \
     --policy.device=cuda \
     --batch_size=32
