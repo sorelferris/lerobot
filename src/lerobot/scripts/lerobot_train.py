@@ -387,7 +387,6 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         batch = next(dl_iter)
         batch = preprocessor(batch)
         train_tracker.dataloading_s = time.perf_counter() - start_time
-        print("start update policy")
         train_tracker, output_dict = update_policy(
             train_tracker,
             policy,
