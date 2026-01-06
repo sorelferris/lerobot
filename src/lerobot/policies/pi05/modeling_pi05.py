@@ -1017,8 +1017,11 @@ class PI05Policy(PreTrainedPolicy):
             if remap_count > 0:
                 print(f"Remapped {remap_count} state dict keys")
 
-            # Load the remapped state dict into the model
-            missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=strict)
+            # Load the remapped state dict into the model.
+            # Many PI05 checkpoints are *partial* and intentionally omit large base VLM weights
+            # (e.g., token embeddings) because they come from the initialized transformers model.
+            # Using strict=True would raise and prevent loading any of the provided weights.
+            missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=False)
 
             if missing_keys:
                 print(f"Missing keys when loading state dict: {len(missing_keys)} keys")
@@ -1042,6 +1045,20 @@ class PI05Policy(PreTrainedPolicy):
 
             if not missing_keys and not unexpected_keys:
                 print("All keys loaded successfully!")
+            elif strict:
+                # Some published PI05 checkpoints are intentionally partial and omit
+                # the base LM embedding table (initialized from transformers).
+                allowed_missing = {
+                    "model.paligemma_with_expert.paligemma.model.language_model.embed_tokens.weight"
+                }
+                effective_missing = [k for k in missing_keys if k not in allowed_missing]
+                if effective_missing or unexpected_keys:
+                    raise ValueError(
+                        "State dict key mismatch while strict=True. "
+                        f"Missing={len(missing_keys)} (effective={len(effective_missing)}), "
+                        f"unexpected={len(unexpected_keys)}. "
+                        "Re-run with strict=False or use a checkpoint matching this code version."
+                    )
 
         except Exception as e:
             print(f"Warning: Could not remap state dict keys: {e}")

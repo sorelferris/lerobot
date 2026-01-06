@@ -2,5 +2,5 @@
 
 python ./src/lerobot/datasets/v30/convert_dataset_v21_to_v30.py \
  --repo-id="record_1212" \
- --root="./tmp" \
+ --root="/root/autodl-tmp/data" \
  --push-to-hub=False
