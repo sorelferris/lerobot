@@ -112,7 +112,7 @@ unitree_g1 = [
     "pyzmq>=26.2.1,<28.0.0",
     "onnxruntime>=1.16.0,<2.0.0"
 ]
-reachy2 = ["reachy2_sdk>=1.0.14,<1.1.0"]
+reachy2 = ["reachy2_sdk>=1.0.15,<1.1.0"]
 kinematics = ["lerobot[placo-dep]"]
 intelrealsense = [
     "pyrealsense2>=2.55.1.6486,<2.57.0 ; sys_platform != 'darwin'",
@@ -128,7 +128,7 @@ wallx = [
     "torchdiffeq==0.2.5",
     "qwen_vl_utils==0.0.11"
 ]
-pi = ["transformers @ git+https://github.com/huggingface/transformers.git@fix/lerobot_openpi"]
+pi = ["transformers @ git+https://github.com/huggingface/transformers.git@fix/lerobot_openpi", "scipy>=1.10.1,<1.15"]
 smolvla = ["lerobot[transformers-dep]", "num2words>=0.5.14,<0.6.0", "accelerate>=1.7.0,<2.0.0", "safetensors>=0.4.3,<1.0.0"]
 groot = [
     "lerobot[transformers-dep]",
@@ -198,6 +198,7 @@ lerobot-setup-motors="lerobot.scripts.lerobot_setup_motors:main"
 lerobot-teleoperate="lerobot.scripts.lerobot_teleoperate:main"
 lerobot-eval="lerobot.scripts.lerobot_eval:main"
 lerobot-train="lerobot.scripts.lerobot_train:main"
+lerobot-train-tokenizer="lerobot.scripts.lerobot_train_tokenizer:main"
 lerobot-dataset-viz="lerobot.scripts.lerobot_dataset_viz:main"
 lerobot-info="lerobot.scripts.lerobot_info:main"
 lerobot-find-joint-limits="lerobot.scripts.lerobot_find_joint_limits:main"
