@@ -161,6 +161,7 @@ class OpenCVCamera(Camera):
         cv2.setNumThreads(1)
 
         self.videocapture = cv2.VideoCapture(self.index_or_path, self.backend)
+        self.videocapture.set(6, cv2.VideoWriter.fourcc("M", "J", "P", "G"))
 
         if not self.videocapture.isOpened():
             self.videocapture.release()
