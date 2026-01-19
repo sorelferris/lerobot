@@ -1,5 +1,6 @@
 #!/bin/bash
 
+
 lerobot-record \
     --robot.type=so101_follower \
     --robot.port=/dev/ttyACM1 \
@@ -9,6 +10,8 @@ lerobot-record \
     --teleop.port=/dev/ttyACM0 \
     --teleop.id=my_awesome_leader_arm \
     --display_data=true \
+    --display_ip="172.30.240.1" \
+    --display_port=9876 \
     --dataset.repo_id="sorel/record-0118" \
     --dataset.num_episodes=5 \
     --dataset.single_task="Grab the tape and put it in the box." \

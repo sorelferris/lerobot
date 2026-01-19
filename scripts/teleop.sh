@@ -8,4 +8,6 @@ lerobot-teleoperate \
     --teleop.type=so101_leader \
     --teleop.port=/dev/ttyACM0 \
     --teleop.id=my_awesome_leader_arm \
-    --display_data=true 
+    --display_data=true \
+    --display_ip="172.30.240.1" \
+    --display_port=9876
