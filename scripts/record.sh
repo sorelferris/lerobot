@@ -12,4 +12,4 @@ lerobot-record \
     --display_data=true \
     --dataset.repo_id="sorel/record-0120" \
     --dataset.num_episodes=50 \
-    --dataset.single_task="Grab the tape and put it in the box." \
+    --dataset.single_task="Grab the tape and put it in the box."
