@@ -68,7 +68,11 @@ class WandBLogger:
 
         # Set up WandB.
         os.environ["WANDB_SILENT"] = "True"
+
+        import swanlab
         import wandb
+
+        swanlab.sync_wandb()
 
         wandb_run_id = (
             cfg.wandb.run_id
