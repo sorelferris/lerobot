@@ -4,7 +4,7 @@ repo_id="sorel/so101-record-0121"
 data_name="${repo_id#*/}"
 
 policy_type="act"
-policy_repo_id="sorel/${policy_type}_${data_name}"
+policy_repo_id="sorel/${policy_type}-${data_name}"
 
 
 lerobot-train \
@@ -14,5 +14,5 @@ lerobot-train \
   --policy.device=cuda \
   --wandb.enable=true \
   --steps=100_000 \
-  --job_name="train_${policy_type}_${data_name}" \
-#   --output_dir="outputs/train/${policy_type}_${data_name}" \
+  --job_name="train-${policy_type}-${data_name}" \
+#   --output_dir="outputs/train/${policy_type}-${data_name}" \
