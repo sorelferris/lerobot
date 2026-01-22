@@ -14,5 +14,4 @@ lerobot-train \
   --policy.device=cuda \
   --wandb.enable=true \
   --steps=100_000 \
-  --job_name="train-${policy_type}-${data_name}" \
-#   --output_dir="outputs/train/${policy_type}-${data_name}" \
+  --job_name="train-${policy_type}-${data_name}"
