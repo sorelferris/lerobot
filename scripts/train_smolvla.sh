@@ -16,4 +16,5 @@ lerobot-train \
   --policy.device=cuda \
   --wandb.enable=true \
   --steps=50_000 \
+  --batch_size=32 \
   --job_name="train-smolvla-${data_name}"
