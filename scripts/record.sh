@@ -4,8 +4,13 @@ task="Grab the tape and put it in the box."
 
 repo_id="sorel/so101-record-0121"
 
+<<<<<<< HEAD
 cameras="{ front: {type: opencv, index_or_path: 2, width: 640, height: 480, fps: 30}, \n
            wrist: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}}" 
+=======
+cameras="{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, \
+    wrist: {type: opencv, index_or_path: 6, width: 640, height: 480, fps: 30}}"
+>>>>>>> f382eb2 (feat: add swanlab dependency, refactor record script, and create train script)
 
 lerobot-record \
     --robot.type=so101_follower \
