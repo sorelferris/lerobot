@@ -8,16 +8,16 @@ cameras="{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps:
 rm -rf "/home/sorel/.cache/huggingface/lerobot/sorel/eval_so101"
 
 lerobot-record  \
-  --robot.type=so100_follower \
+  --robot.type=so101_follower \
   --robot.port=/dev/ttyACM1 \
   --robot.cameras="$cameras" \
   --robot.id=my_awesome_follower_arm \
-  --display_data=false \
+  --display_data=true \
   --dataset.repo_id="sorel/eval_so101" \
   --dataset.push_to_hub=false \
   --dataset.single_task="$task" \
+  --dataset.episode_time_s=3600 \
+  --teleop.type=so101_leader \
+  --teleop.port=/dev/ttyACM0 \
+  --teleop.id=my_awesome_leader_arm \
   --policy.path="sorel/act_so101-record-0121"
-  # <- Teleop optional if you want to teleoperate in between episodes \
-  # --teleop.type=so100_leader \
-  # --teleop.port=/dev/ttyACM0 \
-  # --teleop.id=my_awesome_leader_arm \

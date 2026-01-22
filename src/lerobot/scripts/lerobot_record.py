@@ -393,6 +393,7 @@ def record_loop(
             )
 
         dt_s = time.perf_counter() - start_loop_t
+        print(f"Loop time: {dt_s * 1000:>4.1f} ms", end="\r")
         precise_sleep(max(1 / fps - dt_s, 0.0))
 
         timestamp = time.perf_counter() - start_episode_t
