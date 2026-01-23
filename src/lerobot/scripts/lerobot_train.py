@@ -22,7 +22,6 @@ from typing import Any
 
 import torch
 from accelerate import Accelerator
-from rich.progress import track
 from termcolor import colored
 from torch.optim import Optimizer
 
@@ -377,6 +376,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         "lr": AverageMeter("lr", ":0.1e"),
         "update_s": AverageMeter("updt_s", ":.3f"),
         "dataloading_s": AverageMeter("data_s", ":.3f"),
+        "step_s": AverageMeter("step_s", ":.3f"),
+        "eta_min": AverageMeter("eta_min", ":.1f"),
     }
 
     # Use effective batch size for proper epoch calculation in distributed training
@@ -411,10 +412,22 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             rabc_weights_provider=rabc_weights,
         )
 
+        step_duration_s = time.perf_counter() - start_time
+        train_tracker.step_s = step_duration_s
+
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
         step += 1
         train_tracker.step()
+
+        # Update remaining time estimate
+        remaining_steps = max(cfg.steps - step, 0)
+        if remaining_steps > 0:
+            eta_s = max(train_tracker.step_s.avg * remaining_steps, 0.0)
+            train_tracker.eta_min = eta_s / 60
+        else:
+            train_tracker.eta_min = 0.0
+
         is_log_step = cfg.log_freq > 0 and step % cfg.log_freq == 0 and is_main_process
         is_saving_step = step % cfg.save_freq == 0 or step == cfg.steps
         is_eval_step = cfg.eval_freq > 0 and step % cfg.eval_freq == 0
