@@ -22,7 +22,6 @@ from typing import Any
 
 import torch
 from accelerate import Accelerator
-from rich.progress import track
 from termcolor import colored
 from torch.optim import Optimizer
 from tqdm import tqdm
