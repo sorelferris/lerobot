@@ -3,8 +3,8 @@ from lerobot.async_inference.policy_server import serve
 
 
 def main():
-    host = ...  # something like "127.0.0.1" if you're exposing to localhost
-    port = ...  # something like 8080
+    host = "0.0.0.0"  # something like "127.0.0.1" if you're exposing to localhost
+    port = 8080  # something like 8080
 
     config = PolicyServerConfig(
         host=host,

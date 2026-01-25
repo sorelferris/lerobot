@@ -21,18 +21,25 @@ def main():
     # # the robot ids are used the load the right calibration files
     follower_id = ...  # something like "follower_so100"
 
-    robot_cfg = SO100FollowerConfig(port=follower_port, id=follower_id, cameras=camera_cfg)
+    robot_cfg = SO100FollowerConfig(
+        port="/dev/ttyACM1",
+        id="my_awesome_follower_arm",
+        cameras={
+            "front": OpenCVCameraConfig(index_or_path=0, width=640, height=480, fps=30),
+            "wrist": OpenCVCameraConfig(index_or_path=6, width=640, height=480, fps=30),
+        },
+    )
 
-    server_address = ...  # something like "127.0.0.1:8080" if using localhost
+    server_address = "192.168.31.171:8080"  # something like "127.0.0.1:8080" if using localhost
 
     # 3. Create client configuration
     client_cfg = RobotClientConfig(
         robot=robot_cfg,
         server_address=server_address,
-        policy_device="mps",
+        policy_device="cuda",
         client_device="cpu",
         policy_type="act",
-        pretrained_name_or_path="<user>/robot_learning_tutorial_act",
+        pretrained_name_or_path="sorel/act_so101-record-0121",
         chunk_size_threshold=0.5,  # g
         actions_per_chunk=50,  # make sure this is less than the max actions of the policy
     )
@@ -41,7 +48,7 @@ def main():
     client = RobotClient(client_cfg)
 
     # 5. Provide a textual description of the task
-    task = ...
+    task = "Grab the tape and put it in the box."
 
     if client.start():
         # Start action receiver thread
