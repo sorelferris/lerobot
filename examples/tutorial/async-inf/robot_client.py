@@ -12,7 +12,7 @@ def main():
     # check the config.json on the Hub for the policy you are using to see the expected camera specs
     camera_cfg = {
         "front": OpenCVCameraConfig(index_or_path=0, width=640, height=480, fps=30),
-        "wrist": OpenCVCameraConfig(index_or_path=1, width=640, height=480, fps=30),
+        "wrist": OpenCVCameraConfig(index_or_path=6, width=640, height=480, fps=30),
     }
 
     robot_cfg = SO100FollowerConfig(
@@ -48,7 +48,7 @@ def main():
 
         try:
             # Run the control loop
-            client.control_loop(task)
+            client.control_loop(task, verbose=True)
         except KeyboardInterrupt:
             client.stop()
             action_receiver_thread.join()
