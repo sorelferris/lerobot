@@ -359,7 +359,7 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
         action_tensor = self._get_action_chunk(observation)
         inference_time = time.perf_counter() - start_inference
         self.logger.info(
-            f"Preprocessing and inference took {inference_time:.4f}s, action shape: {action_tensor.shape}"
+            f"Preprocessing and inference took {inference_time * 1000:.2f}ms, action shape: {action_tensor.shape}"
         )
 
         """4. Apply postprocessor"""
