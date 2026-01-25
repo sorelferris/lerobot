@@ -11,26 +11,17 @@ def main():
     # these cameras must match the ones expected by the policy - find your cameras with lerobot-find-cameras
     # check the config.json on the Hub for the policy you are using to see the expected camera specs
     camera_cfg = {
-        "up": OpenCVCameraConfig(index_or_path=0, width=640, height=480, fps=30),
-        "side": OpenCVCameraConfig(index_or_path=1, width=640, height=480, fps=30),
+        "front": OpenCVCameraConfig(index_or_path=0, width=640, height=480, fps=30),
+        "wrist": OpenCVCameraConfig(index_or_path=1, width=640, height=480, fps=30),
     }
 
-    # # find ports using lerobot-find-port
-    follower_port = ...  # something like "/dev/tty.usbmodem58760431631"
-
-    # # the robot ids are used the load the right calibration files
-    follower_id = ...  # something like "follower_so100"
-
     robot_cfg = SO100FollowerConfig(
-        port="/dev/ttyACM1",
-        id="my_awesome_follower_arm",
-        cameras={
-            "front": OpenCVCameraConfig(index_or_path=0, width=640, height=480, fps=30),
-            "wrist": OpenCVCameraConfig(index_or_path=6, width=640, height=480, fps=30),
-        },
+        port="/dev/ttyACM1",  # find ports using lerobot-find-port
+        id="my_awesome_follower_arm",  # the robot ids are used the load the right calibration files
+        cameras=camera_cfg,
     )
 
-    server_address = "192.168.31.171:8080"  # something like "127.0.0.1:8080" if using localhost
+    server_address = "192.168.31.171:8000"  # something like "127.0.0.1:8080" if using localhost
 
     # 3. Create client configuration
     client_cfg = RobotClientConfig(
