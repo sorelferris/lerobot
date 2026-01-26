@@ -124,7 +124,7 @@ class RobotClient:
 
         self.action_queue = Queue()
         self.action_queue_lock = threading.Lock()  # Protect queue operations
-        self.action_queue_size = []
+        self.action_queue_size = []  # Store queue size for visualization for visualization
         self.start_barrier = threading.Barrier(2)  # 2 threads: action receiver, control loop
 
         # FPS measurement
@@ -471,7 +471,7 @@ class RobotClient:
                 _performed_action = self.control_loop_action(verbose)
 
             """Control loop: (2) Streaming observations to the remote policy server"""
-            if self._ready_to_send_observation():
+            if self._ready_to_send_observation():  # send observation only if queue size below threshold
                 _captured_observation = self.control_loop_observation(task, verbose)
 
             self.logger.debug(f"Control loop (ms): {(time.perf_counter() - control_loop_start) * 1000:.2f}")

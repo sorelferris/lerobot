@@ -24,6 +24,6 @@ python src/lerobot/scripts/lerobot_train.py\
     --policy.dtype=bfloat16 \
     --policy.freeze_vision_encoder=false \
     --policy.train_expert_only=true \
-    --wandb.enable=false \
+    --wandb.enable=true \
     --batch_size=32 \
     --steps=50_000

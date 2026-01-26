@@ -31,8 +31,9 @@ def main():
         client_device="cpu",
         policy_type="act",
         pretrained_name_or_path="sorel/act_so101-record-0121",
-        chunk_size_threshold=0.5,  # g
+        chunk_size_threshold=0.5,  # g: the threshold for the chunk size before sending a new observation to the server
         actions_per_chunk=50,  # make sure this is less than the max actions of the policy
+        debug_visualize_queue_size=False,  # visualize the queue size at runtime
     )
 
     # 4. Create and start client

@@ -178,3 +178,5 @@ outputs/
 *.urdf
 *.xml
 *.part
+
+nohup.out
