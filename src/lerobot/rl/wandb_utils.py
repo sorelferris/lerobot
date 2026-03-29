@@ -85,6 +85,16 @@ class WandBLogger:
         os.environ["WANDB_SILENT"] = "True"
         import wandb
 
+        # Sync with swanlab if installed.
+        try:
+            import swanlab
+
+            swanlab.sync_wandb()
+
+        except ImportError:
+            logging.warning("swanlab package is not installed. Skipping swanlab sync.")
+            swanlab = None
+
         wandb_run_id = (
             cfg.wandb.run_id
             if cfg.wandb.run_id
