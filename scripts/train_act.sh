@@ -13,7 +13,7 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 policy_type="act"
 
 lerobot-train \
-  --job_name="train-${policy_type}-${dataset}" \
+  --job_name="${policy_type}-${dataset}" \
   --dataset.repo_id="sorel/${dataset}" \
   --dataset.root="data/train_data/lerobot_v3.0/${dataset}" \
   --policy.type=${policy_type} \

@@ -11,7 +11,7 @@ if [ -z "$dataset"  ] || [ -z "$policy" ]; then
 fi
 
 accelerate launch src/lerobot/scripts/lerobot_train.py \
-  --job_name="train-${policy}-${dataset}" \
+  --job_name="${policy}-${dataset}" \
   --dataset.repo_id="sorel/${dataset}" \
   --policy.type=${policy} \
   --policy.repo_id="sorel/${policy}-${dataset}" \
