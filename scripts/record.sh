@@ -1,13 +1,13 @@
 #!/bin/bash
+# Usage: ./record.sh <dataset> [task]
 
-
-repo_id=$1
-if [ -z "$repo_id" ]; then
-    echo "Usage: $0 <repo_id>"
+dataset=$1
+if [ -z "$dataset" ]; then
+    echo "Usage: $0 <dataset> [task]"
     exit 1
 fi
 
-task="${2:-"Grab the tape and put it in the box."}"
+task="${2:-"pick the tape and place it on the pad."}"
 
 
 cameras="{ front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, \
@@ -22,7 +22,7 @@ lerobot-record \
     --teleop.port=/dev/ttyACM0 \
     --teleop.id=my_awesome_leader_arm \
     --display_data=true \
-    --dataset.repo_id="$repo_id" \
-    --dataset.num_episodes=20 \
+    --dataset.repo_id="sorel/${dataset}" \
+    --dataset.num_episodes=50 \
     --dataset.single_task="$task" \
-    --dataset.push_to_hub=false
+    --dataset.push_to_hub=true
