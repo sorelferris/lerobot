@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: ./train.sh <policy> <dataset>
+# Usage: ./train_policy.sh <policy> <dataset> [steps]
 
 policy="$1"
 dataset="$2"
@@ -9,6 +9,8 @@ if [ -z "$dataset"  ] || [ -z "$policy" ]; then
     echo "Usage: $0 <policy> <dataset>"
     exit 1
 fi
+
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
 accelerate launch src/lerobot/scripts/lerobot_train.py \
   --job_name="${policy}-${dataset}" \
