@@ -119,7 +119,7 @@ class PolicyServer:
             device = getattr(step, "device", None)
             print(f"  [{idx}] {step.__class__.__name__} {'device=' + str(device) if device else ''}")
 
-        self._warmup_policy()
+        # self._warmup_policy()
 
         self.stop_event = threading.Event()
         self.actions_per_chunk = config.actions_per_chunk
@@ -146,9 +146,10 @@ class PolicyServer:
         start_time = time.monotonic()
         for _ in range(3):
             dummy_observation = {
-                "observation.state": torch.rand(8),
-                "observation.images.head_camera": torch.rand(3, 480, 640),
-                "observation.images.left_camera": torch.rand(3, 480, 640),
+                "observation.state": torch.rand(16),
+                "observation.images.head": torch.rand(3, 480, 640),
+                "observation.images.left": torch.rand(3, 480, 640),
+                "observation.images.right": torch.rand(3, 480, 640),
                 "task": "do something",
             }
             self.predict_action_chunk(dummy_observation, i0=0)
@@ -268,7 +269,9 @@ class PolicyServer:
                         table.add_row(k, val, "", "")
 
                     task = observation.get("task", "Unknown Task")
-                    panel = Panel(table, title=f"{self.policy.__class__.__name__}: {task}", subtitle=f"{timestamp}")
+                    panel = Panel(
+                        table, title=f"{self.policy.__class__.__name__}: {task}", subtitle=f"{timestamp}"
+                    )
                     live.update(panel)
         except KeyboardInterrupt:
             print("\n[bright_yellow]Received Ctrl+C, shutting down policy server...[/bright_yellow]")
