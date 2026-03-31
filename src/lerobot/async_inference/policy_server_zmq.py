@@ -176,7 +176,8 @@ class PolicyServer:
 
     def predict_action_chunk(self, observation: dict[str, torch.Tensor], i0: int):
         # Check observation dict values for torch.Tensor type
-        for k, v in observation.items():
+        for k in list(observation.keys()):  # use list to avoid iteration error
+            v = observation[k]
             if k == "task":
                 continue
             assert isinstance(v, torch.Tensor), (
