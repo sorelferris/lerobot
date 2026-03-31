@@ -43,14 +43,14 @@ from rich.table import Table
 from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 
 
-def chw_2_hwc(tensor: torch.Tensor) -> torch.Tensor:
-    """Convert tensor from CHW to HWC format."""
+def hwc_2_chw(tensor: torch.Tensor) -> torch.Tensor:
+    """Convert tensor from HWC to CHW format."""
     if tensor.ndim != 3:
-        raise ValueError(f"Expected a 3D tensor in CHW format, got {tensor.ndim}D tensor")
-    c, h, w = tensor.shape
+        raise ValueError(f"Expected a 3D tensor in HWC format, got {tensor.ndim}D tensor")
+    h, w, c = tensor.shape
     if c in (1, 3, 4) and h > c and w > c:
-        return tensor.permute(1, 2, 0).contiguous()
-    return tensor.permute(1, 2, 0)
+        return tensor.permute(2, 0, 1).contiguous()
+    return tensor
 
 
 @dataclass
@@ -184,7 +184,7 @@ class PolicyServer:
                 f"Observation '{k}' must be a torch.Tensor, got {type(v).__name__}"
             )
             if "images" in k:
-                observation[k] = chw_2_hwc(v)
+                observation[k] = hwc_2_chw(v)
 
         self.last_processed_obs = observation
 
