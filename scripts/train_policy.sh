@@ -15,6 +15,7 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 accelerate launch src/lerobot/scripts/lerobot_train.py \
   --job_name="${policy}-${dataset}" \
   --dataset.repo_id="sorel/${dataset}" \
+  --dataset.root="data/train_data/lerobot_v3.0/${dataset}" \
   --policy.type=${policy} \
   --policy.repo_id="sorel/${policy}-${dataset}" \
   --policy.device=cuda \

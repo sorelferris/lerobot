@@ -2,6 +2,7 @@
 
 
 dataset="$1"
+steps="${2:-100_000}"
 
 if [ -z "$dataset" ]; then
     echo "Usage: $0 <dataset>"
@@ -20,4 +21,4 @@ lerobot-train \
   --policy.repo_id="sorel/${policy_type}-${dataset}" \
   --policy.device=cuda \
   --wandb.enable=true \
-  --steps=100_000 \
+  --steps=${steps}
