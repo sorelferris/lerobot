@@ -43,6 +43,16 @@ from rich.table import Table
 from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 
 
+def chw_2_hwc(tensor: torch.Tensor) -> torch.Tensor:
+    """Convert tensor from CHW to HWC format."""
+    if tensor.ndim != 3:
+        raise ValueError(f"Expected a 3D tensor in CHW format, got {tensor.ndim}D tensor")
+    c, h, w = tensor.shape
+    if c in (1, 3, 4) and h > c and w > c:
+        return tensor.permute(1, 2, 0).contiguous()
+    return tensor.permute(1, 2, 0)
+
+
 @dataclass
 class PolicyServerConfig:
     """Configuration for PolicyServer.
@@ -172,6 +182,8 @@ class PolicyServer:
             assert isinstance(v, torch.Tensor), (
                 f"Observation '{k}' must be a torch.Tensor, got {type(v).__name__}"
             )
+            if "images" in k:
+                observation[k] = chw_2_hwc(v)
 
         self.last_processed_obs = observation
 
