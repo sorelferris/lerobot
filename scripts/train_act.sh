@@ -1,8 +1,7 @@
 #!/bin/bash
 
-
 dataset="$1"
-steps="${2:-100_000}"
+steps="${2:-50_000}"
 
 if [ -z "$dataset" ]; then
     echo "Usage: $0 <dataset>"
@@ -11,14 +10,12 @@ fi
 
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
-policy_type="act"
-
 lerobot-train \
-  --job_name="${policy_type}-${dataset}" \
+  --job_name="act-${dataset}" \
   --dataset.repo_id="sorel/${dataset}" \
   --dataset.root="data/train_data/lerobot_v3.0/${dataset}" \
-  --policy.type=${policy_type} \
-  --policy.repo_id="sorel/${policy_type}-${dataset}" \
-  --policy.device=cuda \
+  --policy.type="act" \
+  --policy.repo_id="sorel/act-${dataset}" \
   --wandb.enable=true \
+  --batch_size=32 \
   --steps=${steps}

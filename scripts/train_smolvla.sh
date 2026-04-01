@@ -1,24 +1,21 @@
 #!/bin/bash
 
-repo_id="sorel/so101-record-0121"
-policy_type="smolvla"
+dataset="$1"
+steps="${2:-50_000}"
 
-data_name="${repo_id#*/}"
-policy_repo_id="sorel/${policy_type}-${data_name}"
+if [ -z "$dataset" ]; then
+    echo "Usage: $0 <dataset>"
+    exit 1
+fi
 
-rename_map='{"observation.images.front": "observation.images.camera1", "observation.images.wrist": "observation.images.camera2"}'
-
-# For RTX 4000 series GPUs to avoid NCCL errors
-export NCCL_P2P_DISABLE="1"
-export NCCL_IB_DISABLE="1"
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
 lerobot-train \
-  --job_name="train-smolvla-${data_name}" \
-  --dataset.repo_id=${repo_id} \
-  --rename_map="${rename_map}" \
-  --policy.repo_id=${policy_repo_id} \
-  --policy.path=lerobot/smolvla_base \
-  --policy.device=cuda \
+  --job_name="smolvla-${dataset}" \
+  --dataset.repo_id="sorel/${dataset}" \
+  --policy.repo_id="sorel/smolvla-${dataset}" \
+  --policy.path="lerobot/smolvla_base" \
+  --rename_map='{"observation.images.front": "observation.images.camera1", "observation.images.wrist": "observation.images.camera2"}' \
   --wandb.enable=true \
   --batch_size=32 \
-  --steps=50_000
+  --steps=${steps}
