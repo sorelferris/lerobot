@@ -27,6 +27,7 @@ python -m lerobot.async_inference.policy_server_zmq \
 """
 
 import pickle  # nosec
+import socket
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -41,6 +42,17 @@ from rich.panel import Panel
 from rich.table import Table
 
 from lerobot.policies.factory import get_policy_class, make_pre_post_processors
+
+
+def get_local_ip():
+    """Get the local IP address."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 
 def hwc_2_chw(tensor: torch.Tensor) -> torch.Tensor:
@@ -220,7 +232,8 @@ class PolicyServer:
         return actions
 
     def run(self) -> None:
-        print(f"Policy server listen on: tcp://{self.config.host}:{self.config.port}")
+        ip = get_local_ip()
+        print(f"[bright_green]Policy server listen on: tcp://{ip}:{self.config.port}[/bright_green]")
         poller = zmq.Poller()
         poller.register(self.socket, zmq.POLLIN)
         last_step = 0
