@@ -339,13 +339,17 @@ def record_loop(
     start_episode_t = time.perf_counter()
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
+        observation_dt_s = 0.0
+        inference_dt_s: float | None = None
 
         if events["exit_early"]:
             events["exit_early"] = False
             break
 
         # Get robot observation
+        start_observation_t = time.perf_counter()
         obs = robot.get_observation()
+        observation_dt_s = time.perf_counter() - start_observation_t
 
         # Applies a pipeline to the raw robot observation, default is IdentityProcessor
         obs_processed = robot_observation_processor(obs)
@@ -355,6 +359,7 @@ def record_loop(
 
         # Get action from either policy or teleop
         if policy is not None and preprocessor is not None and postprocessor is not None:
+            start_inference_t = time.perf_counter()
             action_values = predict_action(
                 observation=observation_frame,
                 policy=policy,
@@ -365,6 +370,7 @@ def record_loop(
                 task=single_task,
                 robot_type=robot.robot_type,
             )
+            inference_dt_s = time.perf_counter() - start_inference_t
 
             act_processed_policy: RobotAction = make_robot_action(action_values, dataset.features)
 
@@ -422,8 +428,17 @@ def record_loop(
 
         sleep_time_s: float = 1 / fps - dt_s
         if sleep_time_s < 0:
+            camera_timing = f"camera={observation_dt_s * 1000:.1f} ms"
+            inference_timing = (
+                f", inference={inference_dt_s * 1000:.1f} ms"
+                if inference_dt_s is not None and inference_dt_s > 0
+                else ", inference=n/a"
+            )
             logging.warning(
-                f"Record loop is running slower ({1 / dt_s:.1f} Hz) than the target FPS ({fps} Hz). Dataset frames might be dropped and robot control might be unstable. Common causes are: 1) Camera FPS not keeping up 2) Policy inference taking too long 3) CPU starvation"
+                f"Record loop is running slower ({1 / dt_s:.1f} Hz) than the target FPS ({fps} Hz). "
+                f"Timing breakdown: {camera_timing}{inference_timing}, total={dt_s * 1000:.1f} ms. "
+                "Dataset frames might be dropped and robot control might be unstable. "
+                "Common causes are: 1) Camera FPS not keeping up 2) Policy inference taking too long 3) CPU starvation"
             )
 
         precise_sleep(max(sleep_time_s, 0.0))
@@ -503,7 +518,11 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
             )
 
         # Load pretrained policy
-        policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=dataset.meta)
+        policy = (
+            None
+            if cfg.policy is None
+            else make_policy(cfg.policy, ds_meta=dataset.meta, rename_map=cfg.dataset.rename_map)
+        )
         preprocessor = None
         postprocessor = None
         if cfg.policy is not None:

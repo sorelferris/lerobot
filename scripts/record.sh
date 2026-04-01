@@ -2,6 +2,7 @@
 # Usage: ./record.sh <dataset> [task]
 
 dataset=$1
+
 if [ -z "$dataset" ]; then
     echo "Usage: $0 <dataset> [task]"
     exit 1
