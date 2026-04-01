@@ -1,15 +1,12 @@
 #!/bin/bash
 
+usage="$0 <policy_type> <pretrained_name_or_path>"
+
 policy_type="$1"
 ckpt="$2"
 
-if [ -z "$ckpt" ]; then
-    echo "Usage: $0 <pretrained_name_or_path>"
-    exit 1
-fi
-
-if [ -z "$policy_type" ]; then
-    echo "Usage: $0 <policy_type> <pretrained_name_or_path>"
+if [ -z "$ckpt" || -z "$policy_type" ]; then
+    echo "Usage: $usage"
     exit 1
 fi
 
