@@ -1,5 +1,18 @@
 #!/bin/bash
 
+policy_type="$1"
+ckpt="$2"
+
+if [ -z "$ckpt" ]; then
+    echo "Usage: $0 <pretrained_name_or_path>"
+    exit 1
+fi
+
+if [ -z "$policy_type" ]; then
+    echo "Usage: $0 <policy_type> <pretrained_name_or_path>"
+    exit 1
+fi
+
 # Rename robot observation keys to policy input keys if necessary. 
 # For example, if the robot provides "observation.images.right_camera" but the policy expects "observation.images.right", we can set:
 rename_map='{"observation.images.right": "observation.images.right_camera"}'
@@ -12,8 +25,8 @@ rename_map='{}'
 python -m lerobot.async_inference.policy_server_zmq \
     --host=0.0.0.0 \
     --port=8001 \
-    --policy_type="act" \
-    --pretrained_name_or_path="outputs/train/2026-03-31/13-37-49_act-record_0330_right_only/checkpoints/020000/pretrained_model" \
+    --policy_type="$policy_type" \
+    --pretrained_name_or_path="$ckpt" \
     --policy_device=cuda \
     --rename_map="${rename_map}" \
     --actions_per_chunk=50
