@@ -2,52 +2,45 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+import draccus
 import numpy as np
-import tyro
 from rich import print
 from rich.progress import Progress
 
-from lerobot.utils.replay_bot import ReplayRobot, ReplayRobotConfig
-from lerobot.utils.rerun_utils import RerunLogger
-from lerobot.async_inference.robot_client_zmq import PolicyClient, PolicyClientConfig
-
-
-def pick_camera(observation: dict[str, any], token: str):
-    """Pick the first camera image whose key contains the token."""
-    image_keys = [k for k in observation if "observation.images" in k]
-    for key in image_keys:
-        if token in key.lower():
-            return observation[key]
-    return None
+from lerobot.async_inference.client import PolicyClient, PolicyClientConfig
+from lerobot.common.robot_devices.robots.replay_bot import ReplayBot, ReplayBotConfig
+from lerobot.common.robot_devices.utils import busy_wait
+from lerobot.common.utils.rerun_utils import RerunLogger
+from lerobot.scripts.compare_actions import compare_actions
 
 
 @dataclass
-class ReplayConfig:
+class InferOfflineConfig:
     # Policy configuration
     policy: PolicyClientConfig
     # Robot configuration
-    robot: ReplayRobotConfig
+    robot: ReplayBotConfig
     # Limit the frames per second. By default, uses the dataset fps.
     fps: int | None = None
     # Directory to save action data for comparison
-    save_dir: str = "outputs/replay"
-    # Optional: Remote Rerun viewer URL for visualization. If None, no visualization.
+    save_dir: str = "outputs/offline_inference"
+    # Optional: Remote Rerun viewer URL. If None, use local viewer.
     rerun_url: str | None = None
 
 
-def replay(config: ReplayConfig):
+@draccus.wrap()
+def infer_offline(config: InferOfflineConfig):
     print(asdict(config))
 
-    robot = ReplayRobot(config.robot)
-    policy = PolicyClient(config.policy, get_observation=robot.get_observation)
+    robot = ReplayBot(config.robot)
+    policy = PolicyClient(config.policy, obs_fn=robot.capture_observation)
 
     # Create output directory if it doesn't exist
     save_path = Path(config.save_dir)
     save_path.mkdir(parents=True, exist_ok=True)
     repo_name = config.robot.repo_id.replace("/", "_")
 
-    # Initialize RerunLogger
-    logger = RerunLogger(url=config.rerun_url)
+    logger = RerunLogger(url=config.rerun_url) if config.rerun_url else None
 
     try:
         for episode in robot.episodes:
@@ -60,7 +53,8 @@ def replay(config: ReplayConfig):
             teleop_actions = []
             frame_count = 0
 
-            logger.switch_record()
+            if logger:
+                logger.switch_record()
             # Replay episode until done with MockRobot providing observations and PolicyClient providing actions
             with Progress() as progress:
                 task_id = progress.add_task("Replaying episode", total=robot.dataset.num_frames)
@@ -68,42 +62,27 @@ def replay(config: ReplayConfig):
                     start = time.perf_counter()
 
                     # Get action from policy
-                    action = policy.require_action()
-
-                    if action is None:
-                        # Fallback to teleop action if policy doesn't provide an action in time
-                        action = robot.teleop_action
+                    policy_action = policy.require_action().numpy()
+                    teleop_action = robot.get_teleop_action()["action"].numpy()
 
                     # Store actions for later comparison
-                    teleop_actions.append(robot.teleop_action.numpy())
-                    policy_actions.append(action.numpy())
+                    teleop_actions.append(teleop_action)
+                    policy_actions.append(policy_action)
 
                     # Log to Rerun
-                    observation = robot.get_observation()
-                    head = pick_camera(observation, "head")
-                    left = pick_camera(observation, "left")
-                    right = pick_camera(observation, "right")
+                    observation = robot.capture_observation()
 
-                    if head is not None:
-                        data = {
-                            "observation.images.head_camera": head,
-                            "observation.state": observation["observation.state"],
-                            "teleop_action": robot.teleop_action,
-                            "policy_action": action,
-                            "framestep": frame_count,
-                        }
-                        if left is not None:
-                            data["observation.images.left_camera"] = left
-                        if right is not None:
-                            data["observation.images.right_camera"] = right
+                    if logger is not None:
+                        data = {**observation, "teleop": teleop_action, "policy": policy_action}
                         logger.log(data)
 
                     # Send action to the robot (which will advance to the next frame)
-                    robot.send_action(action)
+                    robot.send_action(action=policy_action)
+                    robot.step()  # Advance to the next frame
                     frame_count += 1
 
                     # Busy-wait to maintain the desired fps
-                    time.sleep(max(0.0, 1.0 / config.fps - (time.perf_counter() - start)))
+                    busy_wait(max(0.0, 1.0 / config.fps - (time.perf_counter() - start)))
 
                     frame_interval = time.perf_counter() - start
                     real_fps = 1.0 / frame_interval if frame_interval > 0 else float("inf")
@@ -121,8 +100,17 @@ def replay(config: ReplayConfig):
             # Save action data for later comparison
             np.save(save_path / f"teleop_actions_{repo_name}_episode_{episode}_tel.npy", teleop_actions)
             np.save(
-                save_path / f"policy_actions_{repo_name}_episode_{episode}_{policy.policy_name}_{config.policy.aggregate_fn_name}.npy",
+                save_path / f"policy_actions_{repo_name}_episode_{episode}_{policy.policy_name}.npy",
                 policy_actions,
+            )
+
+            # Generate comparison plot right after each episode replay completes.
+            compare_actions(
+                data_dir=config.save_dir,
+                repo_id=config.robot.repo_id,
+                episode=episode,
+                policy_types=[policy.policy_name],
+                output_dir=config.save_dir,
             )
 
     finally:
@@ -132,4 +120,4 @@ def replay(config: ReplayConfig):
 
 
 if __name__ == "__main__":
-    replay(tyro.cli(ReplayConfig))
+    infer_offline()
