@@ -140,7 +140,6 @@ class PolicyServer:
                 if "camera" in str(k)
             }
         print(f"Using rename_map: {rename_map}")
-
         device_override = {"device": config.policy_device}
         self.preprocessor, self.postprocessor = make_pre_post_processors(
             self.policy.config,
