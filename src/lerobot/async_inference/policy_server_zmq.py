@@ -31,6 +31,7 @@ import socket
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 import draccus
 import torch
@@ -102,6 +103,13 @@ class PolicyServerConfig:
         if not self.pretrained_name_or_path:
             raise ValueError("pretrained_name_or_path cannot be empty")
 
+        if (Path(self.pretrained_name_or_path) / "pretrained_model").exists():
+            self.pretrained_name_or_path = str(Path(self.pretrained_name_or_path) / "pretrained_model")
+
+        if not (Path(self.pretrained_name_or_path) / "config.json").exists():
+            print(f"[bright_red]Invalid checkpoint path: {self.pretrained_name_or_path}.[/bright_red]")
+            raise ValueError(f"Config file does not exist: {self.pretrained_name_or_path}")
+
         if not self.policy_device:
             raise ValueError("policy_device cannot be empty")
 
@@ -119,16 +127,27 @@ class PolicyServer:
     def __init__(self, config: PolicyServerConfig):
         self.config = config
         self.actions_per_chunk = config.actions_per_chunk
+        self.policy_name = None  # Set in _setup_policy()
         self.policy = self._setup_policy()
         self.chunk_size = 0
         self.action_dim = 0
+        # Set up preprocessor and postprocessor
+        rename_map = config.rename_map
+        if not rename_map:
+            rename_map = {
+                str(k).replace("_camera", ""): str(k)
+                for k in self.policy.config.input_features
+                if "camera" in str(k)
+            }
+        print(f"Using rename_map: {rename_map}")
+
         device_override = {"device": config.policy_device}
         self.preprocessor, self.postprocessor = make_pre_post_processors(
             self.policy.config,
             pretrained_path=config.pretrained_name_or_path,
             preprocessor_overrides={
                 "device_processor": device_override,
-                "rename_observations_processor": {"rename_map": config.rename_map},
+                "rename_observations_processor": {"rename_map": rename_map},
             },
             postprocessor_overrides={"device_processor": device_override},
         )
@@ -153,7 +172,8 @@ class PolicyServer:
 
     def _setup_policy(self):
         policy_class = get_policy_class(self.config.policy_type)
-        print(f"Load <{policy_class.__name__}> policy from {self.config.pretrained_name_or_path}")
+        self.policy_name = policy_class.__name__
+        print(f'[bright_yellow]Loading model: "{self.config.pretrained_name_or_path}" ...[/bright_yellow]')
         start = time.perf_counter()
         policy = policy_class.from_pretrained(self.config.pretrained_name_or_path)
         policy.to(self.config.policy_device)
@@ -259,7 +279,7 @@ class PolicyServer:
                         continue
 
                     if message.get("__request_policy_name__", False):
-                        self.socket.send(pickle.dumps({"policy_name": self.policy.__class__.__name__}))
+                        self.socket.send(pickle.dumps({"policy_name": self.policy_name}))
                         continue
 
                     observation = message.get("observation")
@@ -295,9 +315,7 @@ class PolicyServer:
                         table.add_row(k, val, "", "")
 
                     task = observation.get("task", "Unknown Task")
-                    panel = Panel(
-                        table, title=f"{self.policy.__class__.__name__}: {task}", subtitle=f"{timestamp}"
-                    )
+                    panel = Panel(table, title=f"{self.policy_name}: {task}", subtitle=f"{timestamp}")
                     live.update(panel)
         except KeyboardInterrupt:
             print("\n[bright_yellow]Received Ctrl+C, shutting down policy server...[/bright_yellow]")
