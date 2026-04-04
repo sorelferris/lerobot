@@ -185,10 +185,9 @@ class PolicyServer:
         """Warm up the policy by running dummy inferences."""
         start_time = time.monotonic()
         for _ in range(steps):
-            dummy_observation = {
-                key: torch.rand(val.shape) for key, val in self.policy.config.input_features.items()
-            }
-            output = self.predict_action_chunk(dummy_observation, i0=0)
+            obs = {key: torch.rand(val.shape) for key, val in self.policy.config.input_features.items()}
+            obs["task"] = "do nothing"
+            output = self.predict_action_chunk(obs, i0=0)
         elapsed = time.perf_counter() - start_time
         print(f"[bright_yellow]Taken {elapsed:.2f} seconds to warm up the policy.[/bright_yellow]")
         print(f"[bright_yellow]Output shape: {output[next(iter(output))].shape}[/bright_yellow]")
