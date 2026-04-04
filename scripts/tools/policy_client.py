@@ -20,9 +20,10 @@ class MockRobot:
     def get_observation(self):
         # Return dummy observation in torch tensor format
         return {
-            "observation.state": torch.randn(8),  # 8-dimensional state vector
-            "observation.images.head_camera": torch.randint(0, 256, (3, 480, 640), dtype=torch.uint8).float(),
-            "observation.images.left_camera": torch.randint(0, 256, (3, 480, 640), dtype=torch.uint8).float(),
+            "task": "do nothing",
+            "observation.state": torch.randn(6),  # 8-dimensional state vector
+            "observation.images.front": torch.randint(0, 256, (3, 480, 640), dtype=torch.uint8).float(),
+            "observation.images.wrist": torch.randint(0, 256, (3, 480, 640), dtype=torch.uint8).float(),
         }
 
     def send_action(self, action_dict):
@@ -42,11 +43,10 @@ AGGREGATE_FUNCTIONS = {
 class PolicyClientConfig:
     # Network configuration
     host: str = field(default="localhost", metadata={"help": "Server host"})
-    port: int = field(default=8000, metadata={"help": "Server port"})
+    port: int = field(default=8001, metadata={"help": "Server port"})
 
     # Runtime configuration
     fps: int = field(default=30, metadata={"help": "Frames per second"})
-    task: str = field(default="dummy", metadata={"help": "Task string sent to the policy server"})
 
     aggregate_fn_name: str = field(
         default="weighted_average",
@@ -70,23 +70,36 @@ class PolicyClientConfig:
 
 
 class PolicyClient:
-    def __init__(self, config: PolicyClientConfig, get_observation: Callable):
+    def __init__(self, config: PolicyClientConfig, obs_fn: Callable):
         self.config = config
-        assert callable(get_observation), "get_observation must be a callable function"
-        self.get_observation = get_observation
+        assert callable(obs_fn), "obs_fn must be a callable function"
+        self.obs_fn = obs_fn
 
         self._ctx = zmq.Context()
         self._socket = self._ctx.socket(zmq.REQ)
-        # self._socket.setsockopt(zmq.RCVTIMEO, 1000)
-        # self._socket.setsockopt(zmq.SNDTIMEO, 1000)
         self._socket.connect(f"tcp://{self.config.host}:{self.config.port}")
         print(f"Connect to server: {self.config.host}:{self.config.port}")
 
-        # Get policy name from server
+        # Get policy name and config from server
         self.policy_name = self.request_policy_name()
+        self.policy_config = self.request_policy_config()
+        self.policy_repo_id = self.policy_config.get("repo_id", "N/A")
+        self.input_features = self.policy_config.get("input_features", {})
+        self.output_features = self.policy_config.get("output_features", {})
         print(f"[bright_yellow]Using policy: <{self.policy_name}>[/bright_yellow]")
+        print(f"[bright_yellow]Policy repo_id: <{self.policy_repo_id}>[/bright_yellow]")
+        print("Input features:")
+        for key, value in self.input_features.items():
+            print(f"  - {key}: {value}")
+        print("Output features:")
+        for key, value in self.output_features.items():
+            print(f"  - {key}: {value}")
 
         # Initialize client side variables
+        self.timestep = 0  # Track the number of timesteps of action
+        self.timestep_lock = threading.Lock()  # Protect timestep variable
+        self._last_observation = None
+        self._last_observation_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.action_queue = Queue()
         self.action_queue_lock = threading.Lock()  # Protect queue operations
@@ -95,26 +108,17 @@ class PolicyClient:
         self.action_thread.start()
         print("[bright_yellow]Client started and action thread launched[/bright_yellow]")
 
-        self.timestep = 0  # Track the number of timesteps of action
-        self.timestep_lock = threading.Lock()  # Protect timestep variable
-        self._last_observation = None
-        self._last_observation_lock = threading.Lock()
-
-    def request_policy_name(self):
-        # Send reset command
-        self._socket.send(pickle.dumps({"__request_policy_name__": True}))
+    def _request(self, payload: dict, response_key: str, default=None):
+        self._socket.send(pickle.dumps(payload))
         poller = zmq.Poller()
-        poller.register(self._socket, zmq.POLLIN)  # POLLIN event: ready to read
-        start_time = time.time()
+        poller.register(self._socket, zmq.POLLIN)
+        start_time, end_time = time.time(), None
         while True:
-            # Poll with 1000 ms timeout
             events = dict(poller.poll(timeout=1000))
-            # If there is a response from the server, events[self._socket] will be POLLIN(1)
             if self._socket in events:
-                message = self._socket.recv()
-                message = pickle.loads(message)
-                if not message.get("policy_name", False):
-                    raise RuntimeError("Failed to request policy name from the policy server.")
+                message = pickle.loads(self._socket.recv())
+                if not message.get(response_key):
+                    raise RuntimeError(f"Failed to get '{response_key}' from the policy server.")
                 break
             else:
                 elapsed = int(time.time() - start_time)
@@ -123,10 +127,15 @@ class PolicyClient:
                     end="\r",
                     flush=True,
                 )
+        if end_time is not None:
+            print(f"[bright_yellow]Connected to server after {elapsed}s.[/bright_yellow]")
+        return message.get(response_key, default)
 
-        elapsed = int(time.time() - start_time)
-        print(f"[bright_yellow]Connected to server after {elapsed}s.[/bright_yellow]")
-        return message.get("policy_name", "unknown")
+    def request_policy_name(self):
+        return self._request({"__request_policy_name__": True}, "policy_name")
+
+    def request_policy_config(self):
+        return self._request({"__request_policy_config__": True}, "policy_config")
 
     def stop(self):
         self.stop_event.set()
@@ -186,9 +195,9 @@ class PolicyClient:
     def request_actions(self):
         while not self.stop_event.is_set():
             # Capture observation and send to policy server
-            observation = self.get_observation()
+            observation = self.obs_fn()
             if observation is None:
-                time.sleep(0.1)
+                time.sleep(0.01)
                 continue
 
             with self._last_observation_lock:
@@ -217,8 +226,12 @@ class PolicyClient:
         with self.action_queue_lock:
             return not self.action_queue.empty()
 
-    def require_action(self) -> torch.Tensor | None:
+    def require_action(self, timeout_s: float = 10.0) -> torch.Tensor | None:
+        start_time = time.monotonic()
         while not self.actions_available():
+            if time.monotonic() - start_time >= timeout_s:
+                print(f"[bright_red]Timeout waiting for action after {timeout_s} seconds.[/bright_red]")
+                return None
             time.sleep(0.01)  # Wait until action is available
 
         # Get action from queue safely and track queue size for debugging

@@ -283,6 +283,10 @@ class PolicyServer:
                         self.socket.send(pickle.dumps({"policy_name": self.policy_name}))
                         continue
 
+                    if message.get("__request_policy_config__", False):
+                        self.socket.send(pickle.dumps({"policy_config": self.policy_config}))
+                        continue
+
                     observation = message.get("observation")
                     timestamp = message.get("timestamp", time.time())
                     timestep = message.get("timestep", 0)
