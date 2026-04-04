@@ -105,10 +105,9 @@ class PolicyServerConfig:
 
         if (Path(self.pretrained_name_or_path) / "pretrained_model").exists():
             self.pretrained_name_or_path = str(Path(self.pretrained_name_or_path) / "pretrained_model")
-
-        if not (Path(self.pretrained_name_or_path) / "config.json").exists():
-            print(f"[bright_red]Invalid checkpoint path: {self.pretrained_name_or_path}.[/bright_red]")
-            raise ValueError(f"Config file does not exist: {self.pretrained_name_or_path}")
+            if not (Path(self.pretrained_name_or_path) / "config.json").exists():
+                print(f"[bright_red]Invalid checkpoint path: {self.pretrained_name_or_path}.[/bright_red]")
+                raise ValueError(f"Config file does not exist: {self.pretrained_name_or_path}")
 
         if not self.policy_device:
             raise ValueError("policy_device cannot be empty")
@@ -159,7 +158,7 @@ class PolicyServer:
             device = getattr(step, "device", None)
             print(f"  [{idx}] {step.__class__.__name__} {'device=' + str(device) if device else ''}")
 
-        # self._warmup_policy()
+        self._warmup_policy()
 
         self.stop_event = threading.Event()
         self.actions_per_chunk = config.actions_per_chunk
@@ -182,20 +181,17 @@ class PolicyServer:
         print(f"[bright_yellow]Taken {elapsed:.2f} seconds to put policy on {device}.[/bright_yellow]")
         return policy
 
-    def _warmup_policy(self):
+    def _warmup_policy(self, steps=3):
         """Warm up the policy by running dummy inferences."""
         start_time = time.monotonic()
-        for _ in range(3):
+        for _ in range(steps):
             dummy_observation = {
-                "observation.state": torch.rand(16),
-                "observation.images.head": torch.rand(3, 480, 640),
-                "observation.images.left": torch.rand(3, 480, 640),
-                "observation.images.right": torch.rand(3, 480, 640),
-                "task": "do something",
+                key: torch.rand(val.shape) for key, val in self.policy.config.input_features.items()
             }
-            self.predict_action_chunk(dummy_observation, i0=0)
+            output = self.predict_action_chunk(dummy_observation, i0=0)
         elapsed = time.perf_counter() - start_time
         print(f"[bright_yellow]Taken {elapsed:.2f} seconds to warm up the policy.[/bright_yellow]")
+        print(f"[bright_yellow]Output shape: {output[next(iter(output))].shape}[/bright_yellow]")
 
     @property
     def policy_image_features(self):
@@ -205,7 +201,14 @@ class PolicyServer:
     def policy_config(self):
         return asdict(self.policy.config)
 
-    def predict_action_chunk(self, observation: dict[str, torch.Tensor], i0: int):
+    def predict_action_chunk(self, observation: dict[str, torch.Tensor], i0: int) -> dict[int, torch.Tensor]:
+        """Predict action chunk for the given observation.
+        Args:
+           observation: A dictionary of observation features.
+           i0: The timestep to start the action chunk from.
+        Returns:
+              A dictionary mapping timestep to action tensor.
+        """
         # Check observation dict values for torch.Tensor type
         for k in list(observation.keys()):  # use list to avoid iteration error
             v = observation[k]
