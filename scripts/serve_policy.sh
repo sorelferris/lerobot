@@ -19,7 +19,7 @@ rename_map='{"observation.images.right": "observation.images.right_camera"}'
 rename_map='{}'
 
 
-python -m lerobot.async_inference.policy_server_zmq \
+python scripts/tools/policy_server.py \
     --host=0.0.0.0 \
     --port=8001 \
     --policy_type="$policy_type" \
