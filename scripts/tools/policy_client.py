@@ -14,17 +14,12 @@ from rich import print
 class MockRobot:
     name = "mock_robot"
 
-    def __init__(self, config):
-        self.config = config
+    def __init__(self, obs_features: dict[str, dict]):
+        self.obs_features = obs_features
 
     def get_observation(self):
-        # Return dummy observation in torch tensor format
-        return {
-            "task": "do nothing",
-            "observation.state": torch.randn(6),  # 8-dimensional state vector
-            "observation.images.front": torch.randint(0, 256, (3, 480, 640), dtype=torch.uint8).float(),
-            "observation.images.wrist": torch.randint(0, 256, (3, 480, 640), dtype=torch.uint8).float(),
-        }
+        # Return dummy observation in torch tensor format with normal distribution
+        return {key: torch.randn(feature["shape"]) for key, feature in self.obs_features.items()}
 
     def send_action(self, action_dict):
         pass
@@ -70,10 +65,8 @@ class PolicyClientConfig:
 
 
 class PolicyClient:
-    def __init__(self, config: PolicyClientConfig, obs_fn: Callable):
+    def __init__(self, config: PolicyClientConfig):
         self.config = config
-        assert callable(obs_fn), "obs_fn must be a callable function"
-        self.obs_fn = obs_fn
 
         self._ctx = zmq.Context()
         self._socket = self._ctx.socket(zmq.REQ)
@@ -104,9 +97,7 @@ class PolicyClient:
         self.action_queue = Queue()
         self.action_queue_lock = threading.Lock()  # Protect queue operations
         self.action_queue_size = []
-        self.action_thread = threading.Thread(target=self.request_actions, daemon=True)
-        self.action_thread.start()
-        print("[bright_yellow]Client started and action thread launched[/bright_yellow]")
+        self.action_thread = None
 
     def _request(self, payload: dict, response_key: str, default=None):
         self._socket.send(pickle.dumps(payload))
@@ -137,12 +128,25 @@ class PolicyClient:
     def request_policy_config(self):
         return self._request({"__request_policy_config__": True}, "policy_config")
 
+    def start(self, obs_fn: Callable):
+        assert callable(obs_fn), "obs_fn must be a callable function"
+        if self.action_thread is not None and self.action_thread.is_alive():
+            print("[bright_yellow]PolicyClient already running[/bright_yellow]")
+            return
+
+        self.obs_fn = obs_fn
+        self.stop_event.clear()
+        self.action_thread = threading.Thread(target=self.request_actions, daemon=True)
+        self.action_thread.start()
+        print("[bright_yellow]PolicyClient started and action thread launched[/bright_yellow]")
+
     def stop(self):
         self.stop_event.set()
-        self.action_thread.join()
+        if self.action_thread is not None and self.action_thread.is_alive():
+            self.action_thread.join()
         self._socket.close(linger=0)
         self._ctx.term()
-        print("[bright_yellow]Client stopped[/bright_yellow]")
+        print("[bright_yellow]PolicyClient stopped[/bright_yellow]")
 
     def reset(self):
         self.action_queue = Queue()
@@ -251,8 +255,9 @@ class PolicyClient:
 def async_client_zmq(config: PolicyClientConfig):
     print(asdict(config))
 
-    robot = MockRobot(config)
-    policy = PolicyClient(config, robot.get_observation)
+    policy = PolicyClient(config)
+    robot = MockRobot(obs_features=policy.input_features)
+    policy.start(obs_fn=robot.get_observation)
 
     try:
         dt = 1.0 / config.fps
