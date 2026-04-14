@@ -1,6 +1,7 @@
 import pickle  # nosec
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from queue import Queue
@@ -16,10 +17,18 @@ class MockRobot:
 
     def __init__(self, obs_features: dict[str, dict]):
         self.obs_features = obs_features
+        self._zero_observation = {
+            key: torch.zeros(
+                feature["shape"],
+                dtype=feature.get("dtype"),
+                device=feature.get("device"),
+            )
+            for key, feature in self.obs_features.items()
+        }
 
     def get_observation(self):
-        # Return dummy observation in torch tensor format with normal distribution
-        return {key: torch.randn(feature["shape"]) for key, feature in self.obs_features.items()}
+        # Return cached zero-filled observation for minimal overhead.
+        return self._zero_observation
 
     def send_action(self, action_dict):
         pass
@@ -93,11 +102,17 @@ class PolicyClient:
         self.timestep_lock = threading.Lock()  # Protect timestep variable
         self._last_observation = None
         self._last_observation_lock = threading.Lock()
+        self._obs_buffer: deque[dict] = deque(maxlen=1)
+        self._obs_buffer_lock = threading.Lock()
+        self._obs_event = threading.Event()
         self.stop_event = threading.Event()
         self.action_queue = Queue()
         self.action_queue_lock = threading.Lock()  # Protect queue operations
         self.action_queue_size = []
         self.action_thread = None
+
+        # Start the action request thread.
+        self.start()
 
     def _request(self, payload: dict, response_key: str, default=None):
         self._socket.send(pickle.dumps(payload))
@@ -128,23 +143,24 @@ class PolicyClient:
     def request_policy_config(self):
         return self._request({"__request_policy_config__": True}, "policy_config")
 
-    def start(self, obs_fn: Callable):
-        assert callable(obs_fn), "obs_fn must be a callable function"
+    def update_observation(self, observation: dict) -> None:
+        """Update the current observation from external code and enqueue it for the action request thread."""
+        with self._last_observation_lock:
+            self._last_observation = observation
+        with self._obs_buffer_lock:
+            self._obs_buffer.append(observation)
+        self._obs_event.set()
+
+    def start(self):
         if self.action_thread is not None and self.action_thread.is_alive():
             print("[bright_yellow]PolicyClient already running[/bright_yellow]")
             return
 
-        self.obs_fn = obs_fn
         self.stop_event.clear()
         self.action_thread = threading.Thread(target=self.request_actions, daemon=True)
         self.action_thread.start()
         # Block until we have at least one observation and an action available.
         print("[bright_yellow]PolicyClient started and action thread launched[/bright_yellow]")
-        while True:
-            if self.last_observation is not None and self.actions_available():
-                break
-            time.sleep(0.01)
-        print("[bright_green]PolicyClient actions are now available![/bright_green]")
 
     def stop(self):
         self.stop_event.set()
@@ -162,6 +178,9 @@ class PolicyClient:
             self.timestep = 0  # Track the number of timesteps of action
         with self._last_observation_lock:
             self._last_observation = None
+        with self._obs_buffer_lock:
+            self._obs_buffer.clear()
+        self._obs_event.clear()
 
     @property
     def last_observation(self) -> dict | None:
@@ -204,14 +223,17 @@ class PolicyClient:
 
     def request_actions(self):
         while not self.stop_event.is_set():
-            # Capture observation and send to policy server
-            observation = self.obs_fn()
-            if observation is None:
-                time.sleep(0.01)
+            # Wait for the latest observation provided via update_observation().
+            if not self._obs_event.wait(timeout=0.1):
                 continue
 
-            with self._last_observation_lock:
-                self._last_observation = observation
+            with self._obs_buffer_lock:
+                if not self._obs_buffer:
+                    self._obs_event.clear()
+                    continue
+                observation = self._obs_buffer[-1]
+                self._obs_buffer.clear()
+                self._obs_event.clear()
 
             payload = {}
             # Include current timestep in the payload for better synchronization and debugging
@@ -236,25 +258,22 @@ class PolicyClient:
         with self.action_queue_lock:
             return not self.action_queue.empty()
 
-    def require_action(self, timeout_s: float = 3.0) -> torch.Tensor | None:
-        start_time = time.monotonic()
-        while not self.actions_available():
-            elapsed = time.monotonic() - start_time
-            if elapsed >= timeout_s:
-                print(
-                    f"[bright_red]Timeout requiring action after {elapsed:.0f} seconds.[/bright_red]",
-                    end="\r",
-                    flush=True,
-                )
-                time.sleep(1.0)
-            else:
-                time.sleep(0.01)  # Wait until action is available
+    def require_action(self, observation: dict | None = None, timeout_s: float = 3.0) -> torch.Tensor | None:
+        if observation is not None:
+            self.update_observation(observation)
+        try:
+            action = self.action_queue.get(timeout=timeout_s)
+        except Exception:
+            print(
+                f"[bright_red]Timeout requiring action after {timeout_s:.0f} seconds.[/bright_red]",
+                end="\r",
+                flush=True,
+            )
+            return None
 
-        # Get action from queue safely and track queue size for debugging
+        # Track queue size for debugging
         with self.action_queue_lock:
             self.action_queue_size.append(self.action_queue.qsize())
-            # Get action from queue
-            action = self.action_queue.get_nowait()
 
         # Increment timestep after getting action
         with self.timestep_lock:
@@ -269,19 +288,30 @@ def async_client_zmq(config: PolicyClientConfig):
 
     policy = PolicyClient(config)
     robot = MockRobot(obs_features=policy.input_features)
-    policy.start(obs_fn=robot.get_observation)
 
     try:
         dt = 1.0 / config.fps
         while True:
             step_start = time.perf_counter()
-            actions = policy.require_action()
+            observation = robot.get_observation()
+            print(f"Taken {time.perf_counter() - step_start:.3f} s to get observation")
+            actions = policy.require_action(observation)
+            print(f"Taken {time.perf_counter() - step_start:.3f} s to get action")
             if actions is not None:
                 robot.send_action(actions)
             time.sleep(max(0.0, dt - (time.perf_counter() - step_start)))
+            actual_fps = 1.0 / (time.perf_counter() - step_start)
+            print(f"Actual FPS: {actual_fps:.2f}")
+
     except KeyboardInterrupt:
         print("Interrupted by user")
     finally:
+        import matplotlib.pyplot as plt
+
+        plt.plot(policy.action_queue_size)
+        plt.title("Action Queue Size Over Time")
+        plt.savefig("action_queue_size.png")
+
         policy.stop()
 
 
