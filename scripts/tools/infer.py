@@ -77,24 +77,6 @@ from lerobot.utils.utils import (
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
 
-def make_policy_observation_fn(robot: Robot, dataset: LeRobotDataset, device: torch.device, task: str) -> Any:
-    def get_policy_observation() -> dict[str, Any] | None:
-        observation = robot.get_observation()
-        if observation is None:
-            return None
-        observation = build_dataset_frame(dataset.features, observation, prefix=OBS_STR)
-        for name in observation:
-            observation[name] = torch.from_numpy(observation[name])
-            if "image" in name:
-                observation[name] = observation[name].type(torch.float32) / 255
-                observation[name] = observation[name].permute(2, 0, 1).contiguous()
-            observation[name] = observation[name].to(device)
-        observation["task"] = task
-        return observation
-
-    return get_policy_observation
-
-
 @dataclass
 class DatasetRecordConfig:
     # Dataset identifier. By convention it should match '{hf_username}/{dataset_name}' (e.g. `lerobot/test`).
@@ -286,9 +268,17 @@ def infer_loop(
         # Get action from either policy or teleop
         if policy is not None:
             start_inference_t = time.perf_counter()
-            observation_frame = policy.last_observation
-            action_values = policy.require_action()
-            print(action_values)
+            observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
+            for name in observation_frame:
+                observation_frame[name] = torch.from_numpy(observation_frame[name])
+                if "image" in name:
+                    observation_frame[name] = observation_frame[name].type(torch.float32) / 255
+                    observation_frame[name] = observation_frame[name].permute(2, 0, 1).contiguous()
+                observation_frame[name] = observation_frame[name].to(get_safe_torch_device("cuda"))
+            observation_frame["task"] = single_task
+            action_values = policy.require_action(observation_frame)
+            if action_values is None:
+                continue
             inference_dt_s = time.perf_counter() - start_inference_t
 
             act_processed_policy: RobotAction = make_robot_action(action_values, dataset.features)
@@ -443,15 +433,6 @@ def infer(cfg: InferConfig) -> LeRobotDataset:
         robot.connect()
         if teleop is not None:
             teleop.connect()
-
-        if policy is not None:
-            obs_fn = make_policy_observation_fn(
-                robot=robot,
-                dataset=dataset,
-                device=get_safe_torch_device("cuda"),
-                task=cfg.dataset.single_task,
-            )
-            policy.start(obs_fn=obs_fn)
 
         listener, events = init_keyboard_listener()
 

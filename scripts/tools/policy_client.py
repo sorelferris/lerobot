@@ -294,9 +294,7 @@ def async_client_zmq(config: PolicyClientConfig):
         while True:
             step_start = time.perf_counter()
             observation = robot.get_observation()
-            print(f"Taken {time.perf_counter() - step_start:.3f} s to get observation")
             actions = policy.require_action(observation)
-            print(f"Taken {time.perf_counter() - step_start:.3f} s to get action")
             if actions is not None:
                 robot.send_action(actions)
             time.sleep(max(0.0, dt - (time.perf_counter() - step_start)))
