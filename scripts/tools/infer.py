@@ -5,6 +5,9 @@ from pathlib import Path
 from pprint import pformat
 from typing import Any
 
+import torch
+from policy_client import PolicyClient, PolicyClientConfig
+
 from lerobot.cameras import (  # noqa: F401
     CameraConfig,  # noqa: F401
 )
@@ -18,8 +21,6 @@ from lerobot.datasets.image_writer import safe_stop_image_writer
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.pipeline_features import aggregate_pipeline_dataset_features, create_initial_features
 from lerobot.datasets.video_utils import VideoEncodingManager
-from lerobot.policies.factory import make_policy, make_pre_post_processors
-from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.utils import make_robot_action
 from lerobot.processor import (
     PolicyAction,
@@ -29,7 +30,6 @@ from lerobot.processor import (
     RobotProcessorPipeline,
     make_default_processors,
 )
-from lerobot.processor.rename_processor import rename_stats
 from lerobot.robots import (  # noqa: F401
     Robot,
     RobotConfig,
@@ -65,8 +65,6 @@ from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.control_utils import (
     init_keyboard_listener,
     is_headless,
-    predict_action,
-    sanity_check_dataset_name,
     sanity_check_dataset_robot_compatibility,
 )
 from lerobot.utils.device_utils import get_safe_torch_device
@@ -77,7 +75,24 @@ from lerobot.utils.utils import (
     log_say,
 )
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
-from scripts.tools.policy_client import PolicyClient, PolicyClientConfig
+
+
+def make_policy_observation_fn(robot: Robot, dataset: LeRobotDataset, device: torch.device, task: str) -> Any:
+    def get_policy_observation() -> dict[str, Any] | None:
+        observation = robot.get_observation()
+        if observation is None:
+            return None
+        observation = build_dataset_frame(dataset.features, observation, prefix=OBS_STR)
+        for name in observation:
+            observation[name] = torch.from_numpy(observation[name])
+            if "image" in name:
+                observation[name] = observation[name].type(torch.float32) / 255
+                observation[name] = observation[name].permute(2, 0, 1).contiguous()
+            observation[name] = observation[name].to(device)
+        observation["task"] = task
+        return observation
+
+    return get_policy_observation
 
 
 @dataclass
@@ -210,9 +225,7 @@ def infer_loop(
     ],  # runs after robot
     dataset: LeRobotDataset | None = None,
     teleop: Teleoperator | list[Teleoperator] | None = None,
-    policy: PreTrainedPolicy | None = None,
-    preprocessor: PolicyProcessorPipeline[dict[str, Any], dict[str, Any]] | None = None,
-    postprocessor: PolicyProcessorPipeline[PolicyAction, PolicyAction] | None = None,
+    policy: PolicyClient | None = None,
     control_time_s: int | None = None,
     single_task: str | None = None,
     display_data: bool = False,
@@ -247,10 +260,8 @@ def infer_loop(
             )
 
     # Reset policy and processor if they are provided
-    if policy is not None and preprocessor is not None and postprocessor is not None:
+    if policy is not None:
         policy.reset()
-        preprocessor.reset()
-        postprocessor.reset()
 
     no_action_count = 0
     timestamp = 0
@@ -272,22 +283,12 @@ def infer_loop(
         # Applies a pipeline to the raw robot observation, default is IdentityProcessor
         obs_processed = robot_observation_processor(obs)
 
-        if policy is not None or dataset is not None:
-            observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
-
         # Get action from either policy or teleop
-        if policy is not None and preprocessor is not None and postprocessor is not None:
+        if policy is not None:
             start_inference_t = time.perf_counter()
-            action_values = predict_action(
-                observation=observation_frame,
-                policy=policy,
-                device=get_safe_torch_device(policy.config.device),
-                preprocessor=preprocessor,
-                postprocessor=postprocessor,
-                use_amp=policy.config.use_amp,
-                task=single_task,
-                robot_type=robot.robot_type,
-            )
+            observation_frame = policy.last_observation
+            action_values = policy.require_action()
+            print(action_values)
             inference_dt_s = time.perf_counter() - start_inference_t
 
             act_processed_policy: RobotAction = make_robot_action(action_values, dataset.features)
@@ -333,9 +334,10 @@ def infer_loop(
 
         # Write to dataset
         if dataset is not None:
-            action_frame = build_dataset_frame(dataset.features, action_values, prefix=ACTION)
-            frame = {**observation_frame, **action_frame, "task": single_task}
-            dataset.add_frame(frame)
+            # action_frame = build_dataset_frame(dataset.features, action_values, prefix=ACTION)
+            # frame = {**observation_frame, **action_frame, "task": single_task}
+            # dataset.add_frame(frame)
+            pass
 
         if display_data:
             log_rerun_data(
@@ -418,7 +420,7 @@ def infer(cfg: InferConfig) -> LeRobotDataset:
             sanity_check_dataset_robot_compatibility(dataset, robot, cfg.dataset.fps, dataset_features)
         else:
             # Create empty dataset or load existing saved episodes
-            sanity_check_dataset_name(cfg.dataset.repo_id, cfg.policy)
+            # sanity_check_dataset_name(cfg.dataset.repo_id, cfg.policy)
             dataset = LeRobotDataset.create(
                 cfg.dataset.repo_id,
                 cfg.dataset.fps,
@@ -436,24 +438,20 @@ def infer(cfg: InferConfig) -> LeRobotDataset:
             )
 
         # Connect to policy server
-        policy = PolicyClient(cfg.policy, robot.get_observation) if cfg.policy is not None else None
-
-        preprocessor = None
-        postprocessor = None
-        if cfg.policy is not None:
-            preprocessor, postprocessor = make_pre_post_processors(
-                policy_cfg=cfg.policy,
-                pretrained_path=cfg.policy.pretrained_path,
-                dataset_stats=rename_stats(dataset.meta.stats, cfg.dataset.rename_map),
-                preprocessor_overrides={
-                    "device_processor": {"device": cfg.policy.device},
-                    "rename_observations_processor": {"rename_map": cfg.dataset.rename_map},
-                },
-            )
+        policy = PolicyClient(cfg.policy) if cfg.policy is not None else None
 
         robot.connect()
         if teleop is not None:
             teleop.connect()
+
+        if policy is not None:
+            obs_fn = make_policy_observation_fn(
+                robot=robot,
+                dataset=dataset,
+                device=get_safe_torch_device("cuda"),
+                task=cfg.dataset.single_task,
+            )
+            policy.start(obs_fn=obs_fn)
 
         listener, events = init_keyboard_listener()
 
@@ -475,8 +473,6 @@ def infer(cfg: InferConfig) -> LeRobotDataset:
                     robot_observation_processor=robot_observation_processor,
                     teleop=teleop,
                     policy=policy,
-                    preprocessor=preprocessor,
-                    postprocessor=postprocessor,
                     dataset=dataset,
                     control_time_s=cfg.dataset.episode_time_s,
                     single_task=cfg.dataset.single_task,

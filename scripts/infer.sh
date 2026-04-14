@@ -12,7 +12,7 @@ rename_map='{}'
 rm -rf "/home/sorel/.cache/huggingface/lerobot/sorel/eval_so101"
 
 
-python tools/infer.py  \
+python scripts/tools/infer.py  \
   --robot.type=so101_follower \
   --robot.port=/dev/ttyACM1 \
   --robot.cameras="$cameras" \

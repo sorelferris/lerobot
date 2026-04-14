@@ -138,7 +138,13 @@ class PolicyClient:
         self.stop_event.clear()
         self.action_thread = threading.Thread(target=self.request_actions, daemon=True)
         self.action_thread.start()
+        # Block until we have at least one observation and an action available.
         print("[bright_yellow]PolicyClient started and action thread launched[/bright_yellow]")
+        while True:
+            if self.last_observation is not None and self.actions_available():
+                break
+            time.sleep(0.01)
+        print("[bright_green]PolicyClient actions are now available![/bright_green]")
 
     def stop(self):
         self.stop_event.set()
@@ -149,11 +155,11 @@ class PolicyClient:
         print("[bright_yellow]PolicyClient stopped[/bright_yellow]")
 
     def reset(self):
-        self.action_queue = Queue()
-        self.action_queue_lock = threading.Lock()  # Protect queue operations
+        with self.action_queue_lock:
+            self.action_queue = Queue()
         self.action_queue_size = []
-        self.timestep = 0  # Track the number of timesteps of action
-        self.timestep_lock = threading.Lock()  # Protect timestep variable
+        with self.timestep_lock:
+            self.timestep = 0  # Track the number of timesteps of action
         with self._last_observation_lock:
             self._last_observation = None
 
@@ -230,13 +236,19 @@ class PolicyClient:
         with self.action_queue_lock:
             return not self.action_queue.empty()
 
-    def require_action(self, timeout_s: float = 10.0) -> torch.Tensor | None:
+    def require_action(self, timeout_s: float = 3.0) -> torch.Tensor | None:
         start_time = time.monotonic()
         while not self.actions_available():
-            if time.monotonic() - start_time >= timeout_s:
-                print(f"[bright_red]Timeout waiting for action after {timeout_s} seconds.[/bright_red]")
-                return None
-            time.sleep(0.01)  # Wait until action is available
+            elapsed = time.monotonic() - start_time
+            if elapsed >= timeout_s:
+                print(
+                    f"[bright_red]Timeout requiring action after {elapsed:.0f} seconds.[/bright_red]",
+                    end="\r",
+                    flush=True,
+                )
+                time.sleep(1.0)
+            else:
+                time.sleep(0.01)  # Wait until action is available
 
         # Get action from queue safely and track queue size for debugging
         with self.action_queue_lock:
