@@ -15,7 +15,7 @@
 """
 Example:
 ```shell
-python scripts/tools/policy_server.py \
+python scripts/tools/policy_server_dev.py \
     --host=0.0.0.0 \
     --port=8001 \
     --policy_type="act" \
