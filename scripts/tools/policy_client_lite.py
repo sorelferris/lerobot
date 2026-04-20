@@ -1,10 +1,6 @@
 import pickle  # nosec
-import threading
 import time
-from collections import deque
-from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from queue import Queue
 
 import draccus
 import torch
@@ -83,6 +79,14 @@ class PolicyClient:
 
         self.timestep = 0  # Track the number of timesteps of action
 
+    def close(self):
+        self._socket.close(linger=0)
+        self.context.term()
+        print("[bright_yellow]PolicyClient closed[/bright_yellow]")
+
+    def reset(self):
+        self.timestep = 0  # Track the number of timesteps of action
+
     def _request(self, payload: dict, response_key: str, default=None):
         self._socket.send(pickle.dumps(payload))
         poller = zmq.Poller()
@@ -112,81 +116,19 @@ class PolicyClient:
     def request_policy_config(self):
         return self._request({"__request_policy_config__": True}, "policy_config")
 
-    def update_observation(self, observation: dict) -> None:
-        """Update the current observation from external code and enqueue it for the action request thread."""
-        with self._last_observation_lock:
-            self._last_observation = observation
-        with self._obs_buffer_lock:
-            self._obs_buffer.append(observation)
-        self._obs_event.set()
-
-    def close(self):
-        self._socket.close(linger=0)
-        self.context.term()
-        print("[bright_yellow]PolicyClient closed[/bright_yellow]")
-
-    def reset(self):
-        self.timestep = 0  # Track the number of timesteps of action
-
-    def request_actions(self):
-        while not self.stop_event.is_set():
-            # Wait for the latest observation provided via update_observation().
-            if not self._obs_event.wait(timeout=0.1):
-                continue
-
-            with self._obs_buffer_lock:
-                if not self._obs_buffer:
-                    self._obs_event.clear()
-                    continue
-                observation = self._obs_buffer[-1]
-                self._obs_buffer.clear()
-                self._obs_event.clear()
-
-            payload = {}
-            # Include current timestep in the payload for better synchronization and debugging
-            with self.timestep_lock:
-                payload["timestep"] = self.timestep
-
-            # Add timestamp to payload for debugging and latency measurement
-            payload["timestamp"] = time.time()
-            payload["observation"] = observation
-            self._socket.send(pickle.dumps(payload))
-            try:
-                message = self._socket.recv()
-            except zmq.error.Again:
-                continue
-            actions = pickle.loads(message)
-
-            # Aggregate actions with the same timestep in the queue
-            self.aggregate_actions_in_queue(actions, aggregate_fn=self.config.aggregate_fn)
-
-    def actions_available(self):
-        """Check if there are actions available in the queue"""
-        with self.action_queue_lock:
-            return not self.action_queue.empty()
-
-    def require_action(self, observation: dict | None = None, timeout_s: float = 3.0) -> torch.Tensor | None:
-        if observation is not None:
-            self.update_observation(observation)
+    def request_action(self, observation: dict):
+        payload = {"timestep": self.timestep}
+        # Add timestamp to payload for debugging and latency measurement
+        payload["timestamp"] = time.time()
+        payload["observation"] = observation
+        self._socket.send(pickle.dumps(payload))
         try:
-            action = self.action_queue.get(timeout=timeout_s)
-        except Exception:
-            print(
-                f"[bright_red]Timeout requiring action after {timeout_s:.0f} seconds.[/bright_red]",
-                end="\r",
-                flush=True,
-            )
+            message = self._socket.recv()
+        except zmq.error.Again:
             return None
 
-        # Track queue size for debugging
-        with self.action_queue_lock:
-            self.action_queue_size.append(self.action_queue.qsize())
-
-        # Increment timestep after getting action
-        with self.timestep_lock:
-            self.timestep += 1
-
-        return action["action"]
+        self.timestep += 1
+        return pickle.loads(message)
 
 
 @draccus.wrap()
@@ -197,13 +139,14 @@ def main(config: PolicyClientConfig):
     robot = MockRobot(obs_features=policy.input_features)
 
     try:
-        dt = 1.0 / config.fps
+        dt = 1.0 / 30.0  # Target 30 FPS
         while True:
             step_start = time.perf_counter()
             observation = robot.get_observation()
-            actions = policy.require_action(observation)
-            if actions is not None:
-                robot.send_action(actions)
+            action = policy.request_action(observation)
+            print(action)
+            if action is not None:
+                robot.send_action(action)
             time.sleep(max(0.0, dt - (time.perf_counter() - step_start)))
             actual_fps = 1.0 / (time.perf_counter() - step_start)
             print(f"Actual FPS: {actual_fps:.2f}")
