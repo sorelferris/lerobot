@@ -1,6 +1,10 @@
 import pickle  # nosec
+import threading
 import time
+from collections import deque
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from queue import Queue
 
 import draccus
 import torch
@@ -45,6 +49,14 @@ class PolicyClientConfig:
     host: str = field(default="localhost", metadata={"help": "Server host"})
     port: int = field(default=8001, metadata={"help": "Server port"})
 
+    # Runtime configuration
+    fps: int = field(default=30, metadata={"help": "Frames per second"})
+
+    aggregate_fn_name: str = field(
+        default="weighted_average",
+        metadata={"help": f"Name of aggregate function to use. Options: {list(AGGREGATE_FUNCTIONS.keys())}"},
+    )
+
     def __post_init__(self):
         if not self.host:
             raise ValueError("host cannot be empty")
@@ -52,13 +64,21 @@ class PolicyClientConfig:
         if self.port < 1 or self.port > 65535:
             raise ValueError(f"port must be in range [1, 65535], got {self.port}")
 
+        if self.fps <= 0:
+            raise ValueError(f"fps must be positive, got {self.fps}")
+
+        if self.aggregate_fn_name not in AGGREGATE_FUNCTIONS:
+            available = list(AGGREGATE_FUNCTIONS.keys())
+            raise ValueError(f"Unknown aggregate function '{self.aggregate_fn_name}'. Available: {available}")
+        self.aggregate_fn = AGGREGATE_FUNCTIONS[self.aggregate_fn_name]
+
 
 class PolicyClient:
     def __init__(self, config: PolicyClientConfig):
         self.config = config
 
-        self.context = zmq.Context()
-        self._socket = self.context.socket(zmq.REQ)
+        self._ctx = zmq.Context()
+        self._socket = self._ctx.socket(zmq.REQ)
         self._socket.connect(f"tcp://{self.config.host}:{self.config.port}")
         print(f"Connect to server: {self.config.host}:{self.config.port}")
 
@@ -77,15 +97,50 @@ class PolicyClient:
         for key, value in self.output_features.items():
             print(f"  - {key}: {value}")
 
+        # Initialize client side variables
         self.timestep = 0  # Track the number of timesteps of action
+        self.timestep_lock = threading.Lock()  # Protect timestep variable
+        self._last_observation = None
+        self._last_observation_lock = threading.Lock()
+        self._obs_buffer: deque[dict] = deque(maxlen=1)
+        self._obs_buffer_lock = threading.Lock()
+        self._obs_event = threading.Event()
+        self.stop_event = threading.Event()
+        self.action_queue = Queue()
+        self.action_queue_lock = threading.Lock()  # Protect queue operations
+        self.action_queue_size = []
+        self.action_thread = None
 
-    def close(self):
+    def start(self):
+        if self.action_thread is not None and self.action_thread.is_alive():
+            print("[bright_yellow]PolicyClient already running[/bright_yellow]")
+            return
+
+        self.stop_event.clear()
+        self.action_thread = threading.Thread(target=self.request_actions, daemon=True)
+        self.action_thread.start()
+        # Block until we have at least one observation and an action available.
+        print("[bright_yellow]PolicyClient started and action thread launched[/bright_yellow]")
+
+    def stop(self):
+        self.stop_event.set()
+        if self.action_thread is not None and self.action_thread.is_alive():
+            self.action_thread.join()
         self._socket.close(linger=0)
-        self.context.term()
-        print("[bright_yellow]PolicyClient closed[/bright_yellow]")
+        self._ctx.term()
+        print("[bright_yellow]PolicyClient stopped[/bright_yellow]")
 
     def reset(self):
-        self.timestep = 0  # Track the number of timesteps of action
+        with self.action_queue_lock:
+            self.action_queue = Queue()
+        self.action_queue_size = []
+        with self.timestep_lock:
+            self.timestep = 0  # Track the number of timesteps of action
+        with self._last_observation_lock:
+            self._last_observation = None
+        with self._obs_buffer_lock:
+            self._obs_buffer.clear()
+        self._obs_event.clear()
 
     def _request(self, payload: dict, response_key: str, default=None):
         self._socket.send(pickle.dumps(payload))
@@ -116,44 +171,144 @@ class PolicyClient:
     def request_policy_config(self):
         return self._request({"__request_policy_config__": True}, "policy_config")
 
-    def request_action(self, observation: dict):
-        payload = {"timestep": self.timestep}
-        # Add timestamp to payload for debugging and latency measurement
-        payload["timestamp"] = time.time()
-        payload["observation"] = observation
-        self._socket.send(pickle.dumps(payload))
+    def update_observation(self, observation: dict) -> None:
+        """Update the current observation from external code and enqueue it for the action request thread."""
+        with self._last_observation_lock:
+            self._last_observation = observation
+        with self._obs_buffer_lock:
+            self._obs_buffer.append(observation)
+        self._obs_event.set()
+
+    @property
+    def last_observation(self) -> dict | None:
+        with self._last_observation_lock:
+            return self._last_observation
+
+    def aggregate_actions_in_queue(self, incoming_actions: dict, aggregate_fn: Callable = None):
+        """Aggregate actions in the queue"""
+        if aggregate_fn is None:
+            # default aggregate function: take the latest action
+            def aggregate_fn(x1, x2):
+                return x2
+
+        future_action_queue = Queue()
+        with self.action_queue_lock:
+            internal_queue = self.action_queue
+
+        current_action_queue = {x["timestep"]: x["action"] for x in internal_queue.queue}
+
+        for timestep, action in incoming_actions.items():
+            with self.timestep_lock:
+                current_timestep = self.timestep
+
+            # Skip actions that are already passed
+            if timestep <= current_timestep:
+                continue
+
+            # Add action with new timestep
+            elif timestep not in current_action_queue:
+                future_action_queue.put({"timestep": timestep, "action": action})
+                continue
+
+            # Aggregate action with the same timestep in the queue
+            future_action_queue.put(
+                {"timestep": timestep, "action": aggregate_fn(current_action_queue[timestep], action)}
+            )
+
+        with self.action_queue_lock:
+            self.action_queue = future_action_queue
+
+    def request_actions(self):
+        while not self.stop_event.is_set():
+            # Wait for the latest observation provided via update_observation().
+            if not self._obs_event.wait(timeout=0.1):
+                continue
+
+            with self._obs_buffer_lock:
+                if not self._obs_buffer:
+                    self._obs_event.clear()
+                    continue
+                observation = self._obs_buffer[-1]
+                self._obs_buffer.clear()
+                self._obs_event.clear()
+
+            payload = {}
+            # Include current timestep in the payload for better synchronization and debugging
+            with self.timestep_lock:
+                payload["timestep"] = self.timestep
+
+            # Add timestamp to payload for debugging and latency measurement
+            payload["timestamp"] = time.time()
+            payload["observation"] = observation
+            self._socket.send(pickle.dumps(payload))
+            try:
+                message = self._socket.recv()
+            except zmq.error.Again:
+                continue
+            actions = pickle.loads(message)
+
+            # Aggregate actions with the same timestep in the queue
+            self.aggregate_actions_in_queue(actions, aggregate_fn=self.config.aggregate_fn)
+
+    def actions_available(self):
+        """Check if there are actions available in the queue"""
+        with self.action_queue_lock:
+            return not self.action_queue.empty()
+
+    def require_action(self, observation: dict | None = None, timeout_s: float = 3.0) -> torch.Tensor | None:
+        if observation is not None:
+            self.update_observation(observation)
         try:
-            message = self._socket.recv()
-        except zmq.error.Again:
+            action = self.action_queue.get(timeout=timeout_s)
+        except Exception:
+            print(
+                f"[bright_red]Timeout requiring action after {timeout_s:.0f} seconds.[/bright_red]",
+                end="\r",
+                flush=True,
+            )
             return None
 
-        self.timestep += 1
-        return pickle.loads(message)
+        # Track queue size for debugging
+        with self.action_queue_lock:
+            self.action_queue_size.append(self.action_queue.qsize())
+
+        # Increment timestep after getting action
+        with self.timestep_lock:
+            self.timestep += 1
+
+        return action["action"]
 
 
 @draccus.wrap()
-def main(config: PolicyClientConfig):
+def async_client_zmq(config: PolicyClientConfig):
     print(asdict(config))
 
     policy = PolicyClient(config)
     robot = MockRobot(obs_features=policy.input_features)
 
     try:
-        dt = 1.0 / 30.0  # Target 30 FPS
+        dt = 1.0 / config.fps
         while True:
             step_start = time.perf_counter()
             observation = robot.get_observation()
-            action = policy.request_action(observation)
-            print(action)
-            if action is not None:
-                robot.send_action(action)
+            actions = policy.require_action(observation)
+            if actions is not None:
+                robot.send_action(actions)
             time.sleep(max(0.0, dt - (time.perf_counter() - step_start)))
             actual_fps = 1.0 / (time.perf_counter() - step_start)
             print(f"Actual FPS: {actual_fps:.2f}")
 
     except KeyboardInterrupt:
         print("Interrupted by user")
+    finally:
+        import matplotlib.pyplot as plt
+
+        plt.plot(policy.action_queue_size)
+        plt.title("Action Queue Size Over Time")
+        plt.savefig("action_queue_size.png")
+
+        policy.stop()
 
 
 if __name__ == "__main__":
-    main()
+    async_client_zmq()

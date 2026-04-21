@@ -310,7 +310,7 @@ class PolicyServer:
                     table.add_row("", "", "", "")
                     for k, v in observation.items():
                         val = (
-                            f"{tuple(v.shape)} [{v.min():.2f}, {v.max():.2f}]"
+                            f"{tuple(v.shape)} [{v.min():.2f}, {v.max():.2f}], {v.dtype}"
                             if isinstance(v, torch.Tensor)
                             else v
                         )
