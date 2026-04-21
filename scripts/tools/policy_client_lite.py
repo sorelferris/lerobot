@@ -17,18 +17,16 @@ class MockRobot:
 
     def __init__(self, obs_features: dict[str, dict]):
         self.obs_features = obs_features
-        self._zero_observation = {
-            key: torch.zeros(
-                feature["shape"],
-                dtype=feature.get("dtype"),
-                device=feature.get("device"),
-            )
+        self._random_observation = {
+            key: torch.randint(0, 256, feature["shape"], dtype=torch.uint8)
+            if "image" in key
+            else torch.randn(feature["shape"], dtype=torch.float32)
             for key, feature in self.obs_features.items()
         }
 
-    def get_observation(self):
+    def get_observation(self) -> dict:
         # Return cached zero-filled observation for minimal overhead.
-        return self._zero_observation
+        return self._random_observation
 
     def send_action(self, action_dict):
         pass
@@ -49,9 +47,10 @@ class PolicyClientConfig:
     host: str = field(default="localhost", metadata={"help": "Server host"})
     port: int = field(default=8001, metadata={"help": "Server port"})
 
-    # Runtime configuration
-    fps: int = field(default=30, metadata={"help": "Frames per second"})
+    # The threshold for the chunk size before sending a new observation to the server
+    chunk_size_threshold: float = field(default=1.0, metadata={"help": "Threshold for chunk size"})
 
+    # Aggregate function configuration
     aggregate_fn_name: str = field(
         default="weighted_average",
         metadata={"help": f"Name of aggregate function to use. Options: {list(AGGREGATE_FUNCTIONS.keys())}"},
@@ -64,8 +63,8 @@ class PolicyClientConfig:
         if self.port < 1 or self.port > 65535:
             raise ValueError(f"port must be in range [1, 65535], got {self.port}")
 
-        if self.fps <= 0:
-            raise ValueError(f"fps must be positive, got {self.fps}")
+        if self.chunk_size_threshold < 0 or self.chunk_size_threshold > 1.0:
+            raise ValueError(f"chunk_size_threshold must be in [0, 1.0], got {self.chunk_size_threshold}")
 
         if self.aggregate_fn_name not in AGGREGATE_FUNCTIONS:
             available = list(AGGREGATE_FUNCTIONS.keys())
@@ -77,10 +76,9 @@ class PolicyClient:
     def __init__(self, config: PolicyClientConfig):
         self.config = config
 
-        self._ctx = zmq.Context()
-        self._socket = self._ctx.socket(zmq.REQ)
+        self.context = zmq.Context()
+        self._socket = self.context.socket(zmq.REQ)
         self._socket.connect(f"tcp://{self.config.host}:{self.config.port}")
-        print(f"Connect to server: {self.config.host}:{self.config.port}")
 
         # Get policy name and config from server
         self.policy_name = self.request_policy_name()
@@ -88,14 +86,14 @@ class PolicyClient:
         self.policy_repo_id = self.policy_config.get("repo_id", "N/A")
         self.input_features = self.policy_config.get("input_features", {})
         self.output_features = self.policy_config.get("output_features", {})
-        print(f"[bright_yellow]Using policy: <{self.policy_name}>[/bright_yellow]")
-        print(f"[bright_yellow]Policy repo_id: <{self.policy_repo_id}>[/bright_yellow]")
-        print("Input features:")
+        print(f"[bright_yellow]Using policy: {self.policy_name} <{self.policy_repo_id}>[/bright_yellow]")
+        print("[bright_yellow]Input features:[/bright_yellow]")
         for key, value in self.input_features.items():
             print(f"  - {key}: {value}")
-        print("Output features:")
+        print("[bright_yellow]Output features:[/bright_yellow]")
         for key, value in self.output_features.items():
             print(f"  - {key}: {value}")
+        print(f"Connected to server: {self.config.host}:{self.config.port}")
 
         # Initialize client side variables
         self.timestep = 0  # Track the number of timesteps of action
@@ -111,7 +109,10 @@ class PolicyClient:
         self.action_queue_size = []
         self.action_thread = None
 
+        self.start()
+
     def start(self):
+        """"""
         if self.action_thread is not None and self.action_thread.is_alive():
             print("[bright_yellow]PolicyClient already running[/bright_yellow]")
             return
@@ -127,7 +128,7 @@ class PolicyClient:
         if self.action_thread is not None and self.action_thread.is_alive():
             self.action_thread.join()
         self._socket.close(linger=0)
-        self._ctx.term()
+        self.context.term()
         print("[bright_yellow]PolicyClient stopped[/bright_yellow]")
 
     def reset(self):
@@ -286,11 +287,20 @@ def async_client_zmq(config: PolicyClientConfig):
     policy = PolicyClient(config)
     robot = MockRobot(obs_features=policy.input_features)
 
+    # while True:
+    #     t0 = time.perf_counter()
+    #     obs = robot.get_observation(random=True)
+    #     print(f"Taken {(time.perf_counter() - t0) * 1000:.02f}ms to get observation")
+    #     t0 = time.perf_counter()
+    #     pickle.dumps(obs)  # nosec
+    #     print(f"Taken {(time.perf_counter() - t0) * 1000:.02f}ms to serialize observation")
+
     try:
-        dt = 1.0 / config.fps
+        dt = 1.0 / 30.0
         while True:
             step_start = time.perf_counter()
             observation = robot.get_observation()
+            observation["task"] = "do nothing"
             actions = policy.require_action(observation)
             if actions is not None:
                 robot.send_action(actions)

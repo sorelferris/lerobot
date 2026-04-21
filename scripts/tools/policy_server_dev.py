@@ -60,6 +60,8 @@ def hwc_2_chw(tensor: torch.Tensor) -> torch.Tensor:
     h, w, c = tensor.shape
     if c in (1, 3, 4) and h > c and w > c:
         return tensor.permute(2, 0, 1).contiguous()
+    if tensor.dtype == torch.uint8:
+        return tensor / 255.0
     return tensor
 
 
@@ -284,14 +286,20 @@ class PolicyServer:
                         self.socket.send(pickle.dumps({"policy_config": self.policy_config}))
                         continue
 
-                    observation = message.get("observation")
+                    observation = message.get("observation", {})
+                    obs_info = {
+                        k: (v.dtype, tuple(v.shape))
+                        for k, v in observation.items()
+                        if isinstance(v, torch.Tensor)
+                    }
+
                     timestamp = message.get("timestamp", time.time())
                     timestep = message.get("timestep", 0)
 
                     infer_time = time.perf_counter()
                     actions = self.predict_action_chunk(observation, i0=timestep)
-                    self.socket.send(pickle.dumps(actions))
                     infer_time = (time.perf_counter() - infer_time) * 1000  # convert to ms
+                    self.socket.send(pickle.dumps(actions))
 
                     # Update live panel
                     timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
@@ -308,16 +316,15 @@ class PolicyServer:
                     table.add_row("chunk_size", str(self.chunk_size), "unpac_time", f"{unpac_time:.2f} ms")
                     table.add_row("action_dim", str(self.action_dim), "infer_time", f"{infer_time:.2f} ms")
                     table.add_row("", "", "", "")
-                    for k, v in observation.items():
-                        val = (
-                            f"{tuple(v.shape)} [{v.min():.2f}, {v.max():.2f}], {v.dtype}"
-                            if isinstance(v, torch.Tensor)
-                            else v
-                        )
-                        table.add_row(k, val, "", "")
-
-                    task = observation.get("task", "Unknown Task")
-                    panel = Panel(table, title=f"{self.policy_name}: {task}", subtitle=f"{timestamp}")
+                    if "task" in observation:
+                        table.add_row("task", observation["task"], "", "")
+                    for k, v in obs_info.items():
+                        table.add_row(k, str(v[0]), str(v[1]))
+                    panel = Panel(
+                        table,
+                        title=f"{self.policy_name} <{self.policy_config.get('repo_id', '')}>",
+                        subtitle=f"{timestamp}",
+                    )
                     live.update(panel)
         except KeyboardInterrupt:
             print("\n[bright_yellow]Received Ctrl+C, shutting down policy server...[/bright_yellow]")
