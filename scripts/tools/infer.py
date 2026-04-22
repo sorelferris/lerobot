@@ -269,12 +269,6 @@ def infer_loop(
         if policy is not None:
             start_inference_t = time.perf_counter()
             observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
-            for name in observation_frame:
-                observation_frame[name] = torch.from_numpy(observation_frame[name])
-                if "image" in name:
-                    observation_frame[name] = observation_frame[name].type(torch.float32) / 255
-                    observation_frame[name] = observation_frame[name].permute(2, 0, 1).contiguous()
-                observation_frame[name] = observation_frame[name].to(get_safe_torch_device("cuda"))
             observation_frame["task"] = single_task
             action_values = policy.require_action(observation_frame)
             if action_values is None:

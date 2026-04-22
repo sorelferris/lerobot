@@ -57,11 +57,11 @@ def hwc_2_chw(tensor: torch.Tensor) -> torch.Tensor:
     """Convert tensor from HWC to CHW format."""
     if tensor.ndim != 3:
         raise ValueError(f"Expected a 3D tensor in HWC format, got {tensor.ndim}D tensor")
+    if tensor.dtype == torch.uint8:
+        tensor = (tensor.clamp(0, 255) / 255.0).to(torch.float32)
     h, w, c = tensor.shape
     if c in (1, 3, 4) and h > c and w > c:
         return tensor.permute(2, 0, 1).contiguous()
-    if tensor.dtype == torch.uint8:
-        return tensor / 255.0
     return tensor
 
 
@@ -202,11 +202,11 @@ class PolicyServer:
             v = observation[k]
             if k == "task":
                 continue
-            assert isinstance(v, torch.Tensor), (
-                f"Observation '{k}' must be a torch.Tensor, got {type(v).__name__}"
-            )
+            if not isinstance(v, torch.Tensor):
+                observation[k] = torch.from_numpy(v)
             if "images" in k:
-                observation[k] = hwc_2_chw(v)
+                observation[k] = hwc_2_chw(observation[k])
+            v = observation[k]
 
         self.last_processed_obs = observation
 

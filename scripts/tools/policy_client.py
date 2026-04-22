@@ -47,7 +47,7 @@ class PolicyClientConfig:
     port: int = field(default=8001, metadata={"help": "Server port"})
 
     # The threshold for the chunk size before sending a new observation to the server
-    chunk_size_threshold: float = field(default=0.0, metadata={"help": "Threshold for chunk size"})
+    chunk_size_threshold: float = field(default=0.1, metadata={"help": "Threshold for chunk size"})
 
     # Aggregate function configuration
     aggregate_fn_name: str = field(
@@ -259,24 +259,18 @@ class PolicyClient:
             self.update_observation(observation)
 
         deadline = time.perf_counter() + timeout_s
+        wait_start = time.perf_counter()
         while not self.actions_available():
             if time.perf_counter() >= deadline:
+                elapsed = time.perf_counter() - wait_start
                 print(
-                    f"[bright_red]Timeout requiring action after {timeout_s:.0f} seconds.[/bright_red]",
+                    f"[bright_red]Timeout requiring action after {elapsed:.0f} seconds.[/bright_red]",
                     end="\r",
                     flush=True,
                 )
             time.sleep(0.001)
 
-        try:
-            action = self.action_queue.get_nowait()
-        except Empty:
-            print(
-                f"[bright_red]Timeout requiring action after {timeout_s:.0f} seconds.[/bright_red]",
-                end="\r",
-                flush=True,
-            )
-            return None
+        action = self.action_queue.get_nowait()
 
         # Track queue size for debugging
         with self.action_queue_lock:
