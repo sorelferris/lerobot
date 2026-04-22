@@ -87,10 +87,6 @@ class PolicyServerConfig:
     # would be aggregated on the client side anyway, depending on the value of `chunk_size_threshold`)
     actions_per_chunk: int = field(default=50, metadata={"help": "Number of actions per chunk"})
 
-    # Timing configuration
-    fps: int = field(default=30, metadata={"help": "Frames per second"})
-    inference_latency: float = field(default=0.033, metadata={"help": "Target inference latency in seconds"})
-
     def __post_init__(self):
         """Validate configuration after initialization."""
         if self.port < 1 or self.port > 65535:
@@ -113,12 +109,6 @@ class PolicyServerConfig:
 
         if self.actions_per_chunk <= 0:
             raise ValueError(f"actions_per_chunk must be positive, got {self.actions_per_chunk}")
-
-        if self.fps <= 0:
-            raise ValueError(f"fps must be positive, got {self.fps}")
-
-        if self.inference_latency < 0:
-            raise ValueError(f"inference_latency must be non-negative, got {self.inference_latency}")
 
 
 class PolicyServer:
@@ -220,7 +210,6 @@ class PolicyServer:
 
         self.last_processed_obs = observation
 
-        start_time = time.perf_counter()
         observation = self.preprocessor(observation)
 
         action_tensor = self.policy.predict_action_chunk(observation)
@@ -242,12 +231,6 @@ class PolicyServer:
 
         # Convert to dict with timestep keys
         actions = {i0 + i: action for i, action in enumerate(action_tensor)}
-
-        elapsed_time = time.perf_counter() - start_time
-
-        # If inference is faster than target latency, artificially delay to maintain consistent timing
-        if elapsed_time < self.config.inference_latency:
-            time.sleep(self.config.inference_latency - elapsed_time)
 
         return actions
 
