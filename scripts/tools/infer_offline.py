@@ -33,7 +33,7 @@ def infer_offline(config: InferOfflineConfig):
     print(asdict(config))
 
     robot = ReplayBot(config.robot)
-    policy = PolicyClient(config.policy, obs_fn=robot.capture_observation)
+    policy = PolicyClient(config.policy)
 
     # Create output directory if it doesn't exist
     save_path = Path(config.save_dir)
@@ -62,22 +62,35 @@ def infer_offline(config: InferOfflineConfig):
                     start = time.perf_counter()
 
                     # Get action from policy
-                    policy_action = policy.require_action().numpy()
+                    t0 = time.perf_counter()
+                    observation = robot.capture_observation()
+                    obs_time = time.perf_counter() - t0
+
+                    t0 = time.perf_counter()
+                    policy_action = policy.require_action(observation).numpy()
+                    policy_time = time.perf_counter() - t0
+
+                    t0 = time.perf_counter()
                     teleop_action = robot.get_teleop_action()["action"].numpy()
+                    teleop_time = time.perf_counter() - t0
 
                     # Store actions for later comparison
+                    t0 = time.perf_counter()
                     teleop_actions.append(teleop_action)
                     policy_actions.append(policy_action)
+                    store_time = time.perf_counter() - t0
 
                     # Log to Rerun
-                    observation = robot.capture_observation()
-
+                    t0 = time.perf_counter()
                     if logger is not None:
                         data = {**observation, "teleop": teleop_action, "policy": policy_action}
                         logger.log(data)
+                    log_time = time.perf_counter() - t0
 
                     # Send action to the robot (which will advance to the next frame)
+                    t0 = time.perf_counter()
                     robot.send_action(action=policy_action)
+                    act_time = time.perf_counter() - t0
                     robot.step()  # Advance to the next frame
                     frame_count += 1
 
@@ -90,7 +103,13 @@ def infer_offline(config: InferOfflineConfig):
                     progress.update(
                         task_id,
                         advance=1,
-                        description=f"Replaying {len(policy_actions)}/{robot.dataset.num_frames} ({frame_interval * 1000:.2f} ms, {real_fps:.2f} fps)",
+                        description=(
+                            f"Replaying {len(policy_actions)}/{robot.dataset.num_frames} "
+                            f"(frame={frame_interval * 1000:.2f}ms, fps={real_fps:.2f}, "
+                            f"obs={obs_time * 1000:.2f}ms, policy={policy_time * 1000:.2f}ms, "
+                            f"teleop={teleop_time * 1000:.2f}ms, store={store_time * 1000:.2f}ms, "
+                            f"log={log_time * 1000:.2f}ms, act={act_time * 1000:.2f}ms)"
+                        ),
                     )
 
             policy_actions = np.array(policy_actions)

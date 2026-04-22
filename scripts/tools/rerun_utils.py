@@ -34,8 +34,8 @@ class RerunLogger:
         self._joint_count: int | None = None
         self._blueprint_sent = False
         self._next_frame_seq = 0
-        # Use a 3-camera layout.
-        self._camera_slots = ["camera_1", "camera_2", "camera_3"]
+        # Camera slots are inferred from available observation.images.* keys.
+        self._camera_slots: list[str] = []
 
         # Isolated recording stream - never touches global rr.init() state.
         self._rec = rr.RecordingStream(
@@ -58,32 +58,19 @@ class RerunLogger:
         if self._blueprint_sent or self._joint_count is None:
             return
 
-        views = [
+        camera_views = [
             rr.blueprint.Spatial2DView(origin="/", contents=[slot], name=slot.replace("_", " ").title())
             for slot in self._camera_slots
         ]
-        if self._joint_count == 16:
-            # Arm-aware grouping: 1..8 left arm (8 is gripper), 9..16 right arm (16 is gripper)
-            joint_groups = [
-                (1, 3),
-                (4, 7),
-                (8, 8),
-                (9, 11),
-                (12, 15),
-                (16, 16),
-            ]
-        else:
-            target_joint_views = 6
-            num_joint_views = min(target_joint_views, self._joint_count)
-            base_size = self._joint_count // num_joint_views
-            remainder = self._joint_count % num_joint_views
-            joint_groups = []
-            start = 1
-            for view_idx in range(num_joint_views):
-                group_size = base_size + (1 if view_idx < remainder else 0)
-                end = start + group_size - 1
-                joint_groups.append((start, end))
-                start = end + 1
+        joint_views = []
+
+        # Group joints by fixed chunks of 8: 1..8, 9..16, 17..24, ...
+        joint_groups = []
+        start = 1
+        while start <= self._joint_count:
+            end = min(start + 7, self._joint_count)
+            joint_groups.append((start, end))
+            start = end + 1
 
         for start, end in joint_groups:
             grouped_contents = []
@@ -92,7 +79,7 @@ class RerunLogger:
                 joint_labels.append(str(joint_no))
                 grouped_contents.extend([f"states/{joint_no}", f"teleop/{joint_no}", f"policy/{joint_no}"])
 
-            views.append(
+            joint_views.append(
                 rr.blueprint.TimeSeriesView(
                     origin="/",
                     contents=grouped_contents,
@@ -100,17 +87,41 @@ class RerunLogger:
                     axis_y=rr.blueprint.ScalarAxis(range=self._y_range) if self._y_range else None,
                 )
             )
-        grid_columns = 3
-        total_rows = (len(views) + grid_columns - 1) // grid_columns
-        row_shares = [1.5] + [1] * (total_rows - 1)
-        blueprint = rr.blueprint.Blueprint(
-            rr.blueprint.Grid(
-                *views,
-                grid_columns=grid_columns,
-                row_shares=row_shares,
-                column_shares=[1, 1, 1],
+
+        top_row = None
+        if camera_views:
+            top_row = rr.blueprint.Grid(
+                *camera_views,
+                grid_columns=len(camera_views),
+                row_shares=[1],
+                column_shares=[1] * len(camera_views),
             )
-        )
+
+        bottom_row = None
+        if joint_views:
+            bottom_row = rr.blueprint.Grid(
+                *joint_views,
+                grid_columns=len(joint_views),
+                row_shares=[1],
+                column_shares=[1] * len(joint_views),
+            )
+
+        if top_row and bottom_row:
+            layout = rr.blueprint.Grid(
+                top_row,
+                bottom_row,
+                grid_columns=1,
+                row_shares=[1.5, 1],
+                column_shares=[1],
+            )
+        elif top_row:
+            layout = top_row
+        elif bottom_row:
+            layout = bottom_row
+        else:
+            return
+
+        blueprint = rr.blueprint.Blueprint(layout)
         self._queue.put((self._CMD_BLUEPRINT, blueprint))
         self._blueprint_sent = True
 
@@ -126,6 +137,8 @@ class RerunLogger:
         ``framestep``                      : int (optional). If missing, an internal increasing sequence is used.
         """
         if self._joint_count is None:
+            image_keys = sorted(k for k in data if str(k).startswith("observation.images."))
+            self._camera_slots = image_keys
             self._joint_count = len(data["observation.state"])
             self._enqueue_blueprint()
 
