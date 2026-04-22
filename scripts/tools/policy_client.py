@@ -1,10 +1,9 @@
 import pickle  # nosec
 import threading
 import time
-from collections import deque
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from queue import Queue
+from queue import Empty, Queue
 
 import draccus
 import torch
@@ -17,18 +16,16 @@ class MockRobot:
 
     def __init__(self, obs_features: dict[str, dict]):
         self.obs_features = obs_features
-        self._zero_observation = {
-            key: torch.zeros(
-                feature["shape"],
-                dtype=feature.get("dtype"),
-                device=feature.get("device"),
-            )
+        self._random_observation = {
+            key: torch.randint(0, 256, feature["shape"], dtype=torch.uint8)
+            if "image" in key
+            else torch.randn(feature["shape"], dtype=torch.float32)
             for key, feature in self.obs_features.items()
         }
 
-    def get_observation(self):
+    def get_observation(self) -> dict:
         # Return cached zero-filled observation for minimal overhead.
-        return self._zero_observation
+        return self._random_observation
 
     def send_action(self, action_dict):
         pass
@@ -49,9 +46,10 @@ class PolicyClientConfig:
     host: str = field(default="localhost", metadata={"help": "Server host"})
     port: int = field(default=8001, metadata={"help": "Server port"})
 
-    # Runtime configuration
-    fps: int = field(default=30, metadata={"help": "Frames per second"})
+    # The threshold for the chunk size before sending a new observation to the server
+    chunk_size_threshold: float = field(default=0.0, metadata={"help": "Threshold for chunk size"})
 
+    # Aggregate function configuration
     aggregate_fn_name: str = field(
         default="weighted_average",
         metadata={"help": f"Name of aggregate function to use. Options: {list(AGGREGATE_FUNCTIONS.keys())}"},
@@ -64,8 +62,8 @@ class PolicyClientConfig:
         if self.port < 1 or self.port > 65535:
             raise ValueError(f"port must be in range [1, 65535], got {self.port}")
 
-        if self.fps <= 0:
-            raise ValueError(f"fps must be positive, got {self.fps}")
+        if self.chunk_size_threshold < 0 or self.chunk_size_threshold > 1.0:
+            raise ValueError(f"chunk_size_threshold must be in [0, 1.0], got {self.chunk_size_threshold}")
 
         if self.aggregate_fn_name not in AGGREGATE_FUNCTIONS:
             available = list(AGGREGATE_FUNCTIONS.keys())
@@ -77,10 +75,9 @@ class PolicyClient:
     def __init__(self, config: PolicyClientConfig):
         self.config = config
 
-        self._ctx = zmq.Context()
-        self._socket = self._ctx.socket(zmq.REQ)
+        self.context = zmq.Context()
+        self._socket = self.context.socket(zmq.REQ)
         self._socket.connect(f"tcp://{self.config.host}:{self.config.port}")
-        print(f"Connect to server: {self.config.host}:{self.config.port}")
 
         # Get policy name and config from server
         self.policy_name = self.request_policy_name()
@@ -88,31 +85,59 @@ class PolicyClient:
         self.policy_repo_id = self.policy_config.get("repo_id", "N/A")
         self.input_features = self.policy_config.get("input_features", {})
         self.output_features = self.policy_config.get("output_features", {})
-        print(f"[bright_yellow]Using policy: <{self.policy_name}>[/bright_yellow]")
-        print(f"[bright_yellow]Policy repo_id: <{self.policy_repo_id}>[/bright_yellow]")
-        print("Input features:")
+        print(f"[bright_yellow]Using policy: {self.policy_name} <{self.policy_repo_id}>[/bright_yellow]")
+        print("[bright_yellow]Input features:[/bright_yellow]")
         for key, value in self.input_features.items():
             print(f"  - {key}: {value}")
-        print("Output features:")
+        print("[bright_yellow]Output features:[/bright_yellow]")
         for key, value in self.output_features.items():
             print(f"  - {key}: {value}")
+        print(f"Connected to server: {self.config.host}:{self.config.port}")
 
         # Initialize client side variables
         self.timestep = 0  # Track the number of timesteps of action
         self.timestep_lock = threading.Lock()  # Protect timestep variable
         self._last_observation = None
         self._last_observation_lock = threading.Lock()
-        self._obs_buffer: deque[dict] = deque(maxlen=1)
-        self._obs_buffer_lock = threading.Lock()
         self._obs_event = threading.Event()
         self.stop_event = threading.Event()
         self.action_queue = Queue()
         self.action_queue_lock = threading.Lock()  # Protect queue operations
         self.action_queue_size = []
         self.action_thread = None
+        self.chunk_size = -1
 
-        # Start the action request thread.
         self.start()
+
+    def start(self):
+        """"""
+        if self.action_thread is not None and self.action_thread.is_alive():
+            print("[bright_yellow]PolicyClient already running[/bright_yellow]")
+            return
+
+        self.stop_event.clear()
+        self.action_thread = threading.Thread(target=self.request_actions, daemon=True)
+        self.action_thread.start()
+        # Block until we have at least one observation and an action available.
+        print("[bright_yellow]PolicyClient started and action thread launched[/bright_yellow]")
+
+    def stop(self):
+        self.stop_event.set()
+        if self.action_thread is not None and self.action_thread.is_alive():
+            self.action_thread.join()
+        self._socket.close(linger=0)
+        self.context.term()
+        print("[bright_yellow]PolicyClient stopped[/bright_yellow]")
+
+    def reset(self):
+        with self.action_queue_lock:
+            self.action_queue = Queue()
+        self.action_queue_size = []
+        with self.timestep_lock:
+            self.timestep = 0  # Track the number of timesteps of action
+        with self._last_observation_lock:
+            self._last_observation = None
+        self._obs_event.clear()
 
     def _request(self, payload: dict, response_key: str, default=None):
         self._socket.send(pickle.dumps(payload))
@@ -147,40 +172,7 @@ class PolicyClient:
         """Update the current observation from external code and enqueue it for the action request thread."""
         with self._last_observation_lock:
             self._last_observation = observation
-        with self._obs_buffer_lock:
-            self._obs_buffer.append(observation)
         self._obs_event.set()
-
-    def start(self):
-        if self.action_thread is not None and self.action_thread.is_alive():
-            print("[bright_yellow]PolicyClient already running[/bright_yellow]")
-            return
-
-        self.stop_event.clear()
-        self.action_thread = threading.Thread(target=self.request_actions, daemon=True)
-        self.action_thread.start()
-        # Block until we have at least one observation and an action available.
-        print("[bright_yellow]PolicyClient started and action thread launched[/bright_yellow]")
-
-    def stop(self):
-        self.stop_event.set()
-        if self.action_thread is not None and self.action_thread.is_alive():
-            self.action_thread.join()
-        self._socket.close(linger=0)
-        self._ctx.term()
-        print("[bright_yellow]PolicyClient stopped[/bright_yellow]")
-
-    def reset(self):
-        with self.action_queue_lock:
-            self.action_queue = Queue()
-        self.action_queue_size = []
-        with self.timestep_lock:
-            self.timestep = 0  # Track the number of timesteps of action
-        with self._last_observation_lock:
-            self._last_observation = None
-        with self._obs_buffer_lock:
-            self._obs_buffer.clear()
-        self._obs_event.clear()
 
     @property
     def last_observation(self) -> dict | None:
@@ -227,13 +219,11 @@ class PolicyClient:
             if not self._obs_event.wait(timeout=0.1):
                 continue
 
-            with self._obs_buffer_lock:
-                if not self._obs_buffer:
-                    self._obs_event.clear()
-                    continue
-                observation = self._obs_buffer[-1]
-                self._obs_buffer.clear()
-                self._obs_event.clear()
+            self._obs_event.clear()
+            with self._last_observation_lock:
+                observation = self._last_observation
+            if observation is None:
+                continue
 
             payload = {}
             # Include current timestep in the payload for better synchronization and debugging
@@ -249,6 +239,7 @@ class PolicyClient:
             except zmq.error.Again:
                 continue
             actions = pickle.loads(message)
+            self.chunk_size = max(self.chunk_size, len(actions))
 
             # Aggregate actions with the same timestep in the queue
             self.aggregate_actions_in_queue(actions, aggregate_fn=self.config.aggregate_fn)
@@ -258,12 +249,28 @@ class PolicyClient:
         with self.action_queue_lock:
             return not self.action_queue.empty()
 
-    def require_action(self, observation: dict | None = None, timeout_s: float = 3.0) -> torch.Tensor | None:
-        if observation is not None:
+    def ready_to_send_observation(self, observation: dict) -> bool:
+        """Check if the observation is ready to be sent."""
+        with self.action_queue_lock:
+            return self.action_queue.qsize() / self.chunk_size <= self.config.chunk_size_threshold
+
+    def require_action(self, observation: dict, timeout_s: float = 3.0) -> torch.Tensor | None:
+        if observation is not None and self.ready_to_send_observation(observation):
             self.update_observation(observation)
+
+        deadline = time.perf_counter() + timeout_s
+        while not self.actions_available():
+            if time.perf_counter() >= deadline:
+                print(
+                    f"[bright_red]Timeout requiring action after {timeout_s:.0f} seconds.[/bright_red]",
+                    end="\r",
+                    flush=True,
+                )
+            time.sleep(0.001)
+
         try:
-            action = self.action_queue.get(timeout=timeout_s)
-        except Exception:
+            action = self.action_queue.get_nowait()
+        except Empty:
             print(
                 f"[bright_red]Timeout requiring action after {timeout_s:.0f} seconds.[/bright_red]",
                 end="\r",
@@ -289,11 +296,20 @@ def async_client_zmq(config: PolicyClientConfig):
     policy = PolicyClient(config)
     robot = MockRobot(obs_features=policy.input_features)
 
+    # while True:
+    #     t0 = time.perf_counter()
+    #     obs = robot.get_observation(random=True)
+    #     print(f"Taken {(time.perf_counter() - t0) * 1000:.02f}ms to get observation")
+    #     t0 = time.perf_counter()
+    #     pickle.dumps(obs)  # nosec
+    #     print(f"Taken {(time.perf_counter() - t0) * 1000:.02f}ms to serialize observation")
+
     try:
-        dt = 1.0 / config.fps
+        dt = 1.0 / 30.0
         while True:
             step_start = time.perf_counter()
             observation = robot.get_observation()
+            observation["task"] = "do nothing"
             actions = policy.require_action(observation)
             if actions is not None:
                 robot.send_action(actions)
