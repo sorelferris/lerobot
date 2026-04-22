@@ -1,10 +1,9 @@
 import pickle  # nosec
 import threading
 import time
-from collections import deque
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from queue import Queue
+from queue import Empty, Queue
 
 import draccus
 import torch
@@ -48,7 +47,7 @@ class PolicyClientConfig:
     port: int = field(default=8001, metadata={"help": "Server port"})
 
     # The threshold for the chunk size before sending a new observation to the server
-    chunk_size_threshold: float = field(default=1.0, metadata={"help": "Threshold for chunk size"})
+    chunk_size_threshold: float = field(default=0.0, metadata={"help": "Threshold for chunk size"})
 
     # Aggregate function configuration
     aggregate_fn_name: str = field(
@@ -100,14 +99,13 @@ class PolicyClient:
         self.timestep_lock = threading.Lock()  # Protect timestep variable
         self._last_observation = None
         self._last_observation_lock = threading.Lock()
-        self._obs_buffer: deque[dict] = deque(maxlen=1)
-        self._obs_buffer_lock = threading.Lock()
         self._obs_event = threading.Event()
         self.stop_event = threading.Event()
         self.action_queue = Queue()
         self.action_queue_lock = threading.Lock()  # Protect queue operations
         self.action_queue_size = []
         self.action_thread = None
+        self.chunk_size = -1
 
         self.start()
 
@@ -139,8 +137,6 @@ class PolicyClient:
             self.timestep = 0  # Track the number of timesteps of action
         with self._last_observation_lock:
             self._last_observation = None
-        with self._obs_buffer_lock:
-            self._obs_buffer.clear()
         self._obs_event.clear()
 
     def _request(self, payload: dict, response_key: str, default=None):
@@ -176,8 +172,6 @@ class PolicyClient:
         """Update the current observation from external code and enqueue it for the action request thread."""
         with self._last_observation_lock:
             self._last_observation = observation
-        with self._obs_buffer_lock:
-            self._obs_buffer.append(observation)
         self._obs_event.set()
 
     @property
@@ -225,13 +219,11 @@ class PolicyClient:
             if not self._obs_event.wait(timeout=0.1):
                 continue
 
-            with self._obs_buffer_lock:
-                if not self._obs_buffer:
-                    self._obs_event.clear()
-                    continue
-                observation = self._obs_buffer[-1]
-                self._obs_buffer.clear()
-                self._obs_event.clear()
+            self._obs_event.clear()
+            with self._last_observation_lock:
+                observation = self._last_observation
+            if observation is None:
+                continue
 
             payload = {}
             # Include current timestep in the payload for better synchronization and debugging
@@ -247,6 +239,7 @@ class PolicyClient:
             except zmq.error.Again:
                 continue
             actions = pickle.loads(message)
+            self.chunk_size = max(self.chunk_size, len(actions))
 
             # Aggregate actions with the same timestep in the queue
             self.aggregate_actions_in_queue(actions, aggregate_fn=self.config.aggregate_fn)
@@ -256,12 +249,28 @@ class PolicyClient:
         with self.action_queue_lock:
             return not self.action_queue.empty()
 
-    def require_action(self, observation: dict | None = None, timeout_s: float = 3.0) -> torch.Tensor | None:
-        if observation is not None:
+    def ready_to_send_observation(self, observation: dict) -> bool:
+        """Check if the observation is ready to be sent."""
+        with self.action_queue_lock:
+            return self.action_queue.qsize() / self.chunk_size <= self.config.chunk_size_threshold
+
+    def require_action(self, observation: dict, timeout_s: float = 3.0) -> torch.Tensor | None:
+        if observation is not None and self.ready_to_send_observation(observation):
             self.update_observation(observation)
+
+        deadline = time.perf_counter() + timeout_s
+        while not self.actions_available():
+            if time.perf_counter() >= deadline:
+                print(
+                    f"[bright_red]Timeout requiring action after {timeout_s:.0f} seconds.[/bright_red]",
+                    end="\r",
+                    flush=True,
+                )
+            time.sleep(0.001)
+
         try:
-            action = self.action_queue.get(timeout=timeout_s)
-        except Exception:
+            action = self.action_queue.get_nowait()
+        except Empty:
             print(
                 f"[bright_red]Timeout requiring action after {timeout_s:.0f} seconds.[/bright_red]",
                 end="\r",
