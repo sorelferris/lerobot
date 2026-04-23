@@ -3,7 +3,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from queue import Empty, Queue
+from queue import Queue
 
 import draccus
 import torch
@@ -198,39 +198,35 @@ class PolicyClient:
         with self.timestep_lock:
             current_timestep = self.timestep
 
-        # 1. Take all actions from the queue safely
-        current_actions = []
+        # Hold the queue lock during read/merge/write so consumers never observe
+        # intermediate empty queue states during queue rebuild.
         with self.action_queue_lock:
+            # 1. Take all actions from the queue safely
+            current_actions = []
             while not self.action_queue.empty():
                 item = self.action_queue.get_nowait()
                 current_actions.append(item)
 
-        # 2. Convert to a dictionary: timestep -> action
-        action_dict = {}
-        for item in current_actions:
-            ts = item["timestep"]
-            if ts > current_timestep:  # Only keep actions that are not expired
-                action_dict[ts] = item["action"]
+            # 2. Convert to a dictionary: timestep -> action
+            action_dict = {}
+            for item in current_actions:
+                ts = item["timestep"]
+                if ts >= current_timestep:  # Keep current and future actions
+                    action_dict[ts] = item["action"]
 
-        # 3. Merge/Aggregate new actions
-        for ts, new_act in incoming_actions.items():
-            if ts <= current_timestep:
-                continue  # Skip actions that have already been processed
+            # 3. Merge/Aggregate new actions
+            for ts, new_act in incoming_actions.items():
+                if ts < current_timestep:
+                    continue  # Skip actions that have already been processed
 
-            if ts in action_dict:
-                # Same timestep → Aggregate
-                action_dict[ts] = aggregate_fn(action_dict[ts], new_act)
-            else:
-                # New timestep → Add
-                action_dict[ts] = new_act
+                if ts in action_dict:
+                    # Same timestep → Aggregate
+                    action_dict[ts] = aggregate_fn(action_dict[ts], new_act)
+                else:
+                    # New timestep → Add
+                    action_dict[ts] = new_act
 
-        # 4. Sort actions by timestep and enqueue them
-        with self.action_queue_lock:
-            # Clear the queue (ensure it's empty before adding new actions)
-            while not self.action_queue.empty():
-                self.action_queue.get_nowait()
-
-            # Sort actions by timestep and enqueue them
+            # 4. Sort actions by timestep and enqueue them
             for ts in sorted(action_dict.keys()):
                 self.action_queue.put({"timestep": ts, "action": action_dict[ts]})
 
@@ -277,6 +273,49 @@ class PolicyClient:
         with self.action_queue_lock:
             return not self.action_queue.empty()
 
+    def _pop_action_for_timestep(self, expected_timestep: int) -> dict | None:
+        """Atomically pop the action for expected_timestep if present.
+
+        Drops stale actions (older timesteps) and preserves queue ordering when
+        only future actions are currently available.
+        """
+        with self.action_queue_lock:
+            if self.action_queue.empty():
+                return None
+
+            future_head = None
+            matched_action = None
+
+            while not self.action_queue.empty():
+                action = self.action_queue.get_nowait()
+                ts = action["timestep"]
+
+                if ts < expected_timestep:
+                    # Drop stale actions that are already past due.
+                    continue
+
+                if ts == expected_timestep:
+                    matched_action = action
+                    break
+
+                # ts > expected_timestep: keep this and all remaining future actions.
+                future_head = action
+                break
+
+            if future_head is not None:
+                remaining = []
+                while not self.action_queue.empty():
+                    remaining.append(self.action_queue.get_nowait())
+                self.action_queue.put(future_head)
+                for item in remaining:
+                    self.action_queue.put(item)
+
+            if matched_action is not None:
+                self.action_queue_size.append(self.action_queue.qsize())
+                return matched_action
+
+            return None
+
     def ready_to_send_observation(self, observation: dict) -> bool:
         """Check if the observation is ready to be sent."""
         with self.action_queue_lock:
@@ -288,7 +327,15 @@ class PolicyClient:
 
         deadline = time.perf_counter() + timeout_s
         wait_start = time.perf_counter()
-        while not self.actions_available():
+        action = None
+        while action is None:
+            with self.timestep_lock:
+                expected_timestep = self.timestep
+
+            action = self._pop_action_for_timestep(expected_timestep)
+            if action is not None:
+                break
+
             if time.perf_counter() >= deadline:
                 elapsed = time.perf_counter() - wait_start
                 print(
@@ -298,15 +345,9 @@ class PolicyClient:
                 )
             time.sleep(0.001)
 
-        action = self.action_queue.get_nowait()
-
-        # Track queue size for debugging
-        with self.action_queue_lock:
-            self.action_queue_size.append(self.action_queue.qsize())
-
         # Increment timestep after getting action
         with self.timestep_lock:
-            self.timestep += 1
+            self.timestep = max(self.timestep, action["timestep"] + 1)
 
         return action["action"]
 
