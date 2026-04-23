@@ -113,30 +113,32 @@ class PolicyServerConfig:
 
 class PolicyServer:
     def __init__(self, config: PolicyServerConfig):
-        self.config = config
-        self.actions_per_chunk = config.actions_per_chunk
-        self.policy_name = None  # Set in _setup_policy()
-        self.policy = self._setup_policy()
+        # Load policy
+        policy_class = get_policy_class(config.policy_type)
+        self.policy_name = policy_class.__name__
+        print(f'[bright_yellow]Loading model: "{config.pretrained_name_or_path}" ...[/bright_yellow]')
+        t0 = time.perf_counter()
+        self.policy = policy_class.from_pretrained(config.pretrained_name_or_path)
+        self.policy.to(config.policy_device)
+        print(self.policy.config)
+        print(f"Taken {time.perf_counter() - t0:.2f} seconds to put policy on {config.policy_device}.")
         self.chunk_size = 0
         self.action_dim = 0
-        # Set up preprocessor and postprocessor
-        rename_map = config.rename_map
-        if not rename_map:
-            rename_map = {
-                str(k).replace("_camera", ""): str(k)
-                for k in self.policy.config.input_features
-                if "camera" in str(k)
-            }
+        # Make preprocessor and postprocessor
+        rename_map = config.rename_map or {
+            str(k).replace("_camera", ""): str(k)
+            for k in self.policy.config.input_features
+            if "camera" in str(k)
+        }  # In compatibility with older checkpoints used to have "camera" in the observation keys
         print(f"Using rename_map: {rename_map}")
-        device_override = {"device": config.policy_device}
         self.preprocessor, self.postprocessor = make_pre_post_processors(
             self.policy.config,
             pretrained_path=config.pretrained_name_or_path,
             preprocessor_overrides={
-                "device_processor": device_override,
+                "device_processor": {"device": config.policy_device},
                 "rename_observations_processor": {"rename_map": rename_map},
             },
-            postprocessor_overrides={"device_processor": device_override},
+            postprocessor_overrides={"device_processor": {"device": config.policy_device}},
         )
         print("preprocessor steps:")
         for idx, step in enumerate(self.preprocessor.steps):
@@ -150,31 +152,17 @@ class PolicyServer:
         self._warmup_policy()
 
         self.stop_event = threading.Event()
-        self.actions_per_chunk = config.actions_per_chunk
-        self.last_processed_obs = None
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REP)
         self.socket.bind(f"tcp://{config.host}:{config.port}")
+        self.bind_port = config.port
         self.console = Console()
-
-    def _setup_policy(self):
-        policy_class = get_policy_class(self.config.policy_type)
-        self.policy_name = policy_class.__name__
-        print(f'[bright_yellow]Loading model: "{self.config.pretrained_name_or_path}" ...[/bright_yellow]')
-        start = time.perf_counter()
-        policy = policy_class.from_pretrained(self.config.pretrained_name_or_path)
-        policy.to(self.config.policy_device)
-        elapsed = time.perf_counter() - start
-        device = self.config.policy_device
-        print(policy.config)
-        print(f"[bright_yellow]Taken {elapsed:.2f} seconds to put policy on {device}.[/bright_yellow]")
-        return policy
 
     def _warmup_policy(self, steps=3):
         """Warm up the policy by running dummy inferences."""
         start_time = time.monotonic()
         for _ in range(steps):
-            obs = {key: torch.rand(val.shape) for key, val in self.policy.config.input_features.items()}
+            obs = {k: torch.rand(v.shape) for k, v in self.policy.config.input_features.items()}
             obs["task"] = "do nothing"
             output = self.predict_action_chunk(obs, i0=0)
         elapsed = time.perf_counter() - start_time
@@ -208,13 +196,8 @@ class PolicyServer:
                 observation[k] = hwc_2_chw(observation[k])
             v = observation[k]
 
-        self.last_processed_obs = observation
-
         observation = self.preprocessor(observation)
-
         action_tensor = self.policy.predict_action_chunk(observation)
-        action_tensor = action_tensor[:, : self.actions_per_chunk, :]  # slice actions_per_chunk
-
         _, self.chunk_size, self.action_dim = action_tensor.shape  # (B, chunk_size, action_dim)
 
         # Process each action in the chunk
@@ -236,7 +219,7 @@ class PolicyServer:
 
     def run(self) -> None:
         ip = get_local_ip()
-        print(f"[bright_green]Policy server listen on: tcp://{ip}:{self.config.port}[/bright_green]")
+        print(f"[bright_green]Policy server listen on: tcp://{ip}:{self.bind_port}[/bright_green]")
         poller = zmq.Poller()
         poller.register(self.socket, zmq.POLLIN)
         last_step = 0
