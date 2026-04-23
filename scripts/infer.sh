@@ -28,4 +28,4 @@ python scripts/tools/infer.py  \
   --teleop.id=my_awesome_leader_arm \
   --policy.host="127.0.0.1" \
   --policy.port=8001 \
-  --policy.chunk_size_threshold=0.5
+  --policy.chunk_size_threshold=1.0

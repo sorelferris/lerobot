@@ -100,6 +100,8 @@ class PolicyClient:
         self._last_observation = None
         self._last_observation_lock = threading.Lock()
         self._obs_event = threading.Event()
+        self._request_in_flight = False
+        self._request_in_flight_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.action_queue = Queue()
         self.action_queue_lock = threading.Lock()  # Protect queue operations
@@ -137,6 +139,8 @@ class PolicyClient:
             self.timestep = 0  # Track the number of timesteps of action
         with self._last_observation_lock:
             self._last_observation = None
+        with self._request_in_flight_lock:
+            self._request_in_flight = False
         self._obs_event.clear()
 
     def _request(self, payload: dict, response_key: str, default=None):
@@ -170,7 +174,11 @@ class PolicyClient:
 
     def update_observation(self, observation: dict) -> None:
         """Update the current observation from external code and enqueue it for the action request thread."""
-        if not self._obs_event.is_set():
+        # Do not enqueue a new observation while one request is already pending.
+        with self._request_in_flight_lock:
+            request_in_flight = self._request_in_flight
+
+        if not request_in_flight and not self._obs_event.is_set():
             with self._last_observation_lock:
                 self._last_observation = observation
             self._obs_event.set()
@@ -246,11 +254,18 @@ class PolicyClient:
             # Add timestamp to payload for debugging and latency measurement
             payload["timestamp"] = time.time()
             payload["observation"] = observation
-            self._socket.send(pickle.dumps(payload))
             try:
+                with self._request_in_flight_lock:
+                    self._request_in_flight = True
+
+                self._socket.send(pickle.dumps(payload))
                 message = self._socket.recv()
             except zmq.error.Again:
                 continue
+            finally:
+                with self._request_in_flight_lock:
+                    self._request_in_flight = False
+
             actions = pickle.loads(message)
             self.chunk_size = max(self.chunk_size, len(actions))
 
