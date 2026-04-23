@@ -105,7 +105,7 @@ class PolicyClient:
         self.action_queue_lock = threading.Lock()  # Protect queue operations
         self.action_queue_size = []
         self.action_thread = None
-        self.chunk_size = -1
+        self.chunk_size = 1
 
         self.start()
 
@@ -170,9 +170,10 @@ class PolicyClient:
 
     def update_observation(self, observation: dict) -> None:
         """Update the current observation from external code and enqueue it for the action request thread."""
-        with self._last_observation_lock:
-            self._last_observation = observation
-        self._obs_event.set()
+        if not self._obs_event.is_set():
+            with self._last_observation_lock:
+                self._last_observation = observation
+            self._obs_event.set()
 
     @property
     def last_observation(self) -> dict | None:
@@ -180,37 +181,50 @@ class PolicyClient:
             return self._last_observation
 
     def aggregate_actions_in_queue(self, incoming_actions: dict, aggregate_fn: Callable = None):
-        """Aggregate actions in the queue"""
+        """Aggregate actions in the queue (SAFE & CORRECT VERSION)"""
         if aggregate_fn is None:
-            # default aggregate function: take the latest action
-            def aggregate_fn(x1, x2):
-                return x2
 
-        future_action_queue = Queue()
+            def aggregate_fn(old, new):
+                return new
+
+        with self.timestep_lock:
+            current_timestep = self.timestep
+
+        # 1. Take all actions from the queue safely
+        current_actions = []
         with self.action_queue_lock:
-            internal_queue = self.action_queue
+            while not self.action_queue.empty():
+                item = self.action_queue.get_nowait()
+                current_actions.append(item)
 
-        current_action_queue = {x["timestep"]: x["action"] for x in internal_queue.queue}
-        for timestep, action in incoming_actions.items():
-            with self.timestep_lock:
-                current_timestep = self.timestep
+        # 2. Convert to a dictionary: timestep -> action
+        action_dict = {}
+        for item in current_actions:
+            ts = item["timestep"]
+            if ts > current_timestep:  # Only keep actions that are not expired
+                action_dict[ts] = item["action"]
 
-            # Skip actions that are already passed
-            if timestep <= current_timestep:
-                continue
+        # 3. Merge/Aggregate new actions
+        for ts, new_act in incoming_actions.items():
+            if ts <= current_timestep:
+                continue  # Skip actions that have already been processed
 
-            # Add action with new timestep
-            elif timestep not in current_action_queue:
-                future_action_queue.put({"timestep": timestep, "action": action})
-                continue
+            if ts in action_dict:
+                # Same timestep → Aggregate
+                action_dict[ts] = aggregate_fn(action_dict[ts], new_act)
+            else:
+                # New timestep → Add
+                action_dict[ts] = new_act
 
-            # Aggregate action with the same timestep in the queue
-            future_action_queue.put(
-                {"timestep": timestep, "action": aggregate_fn(current_action_queue[timestep], action)}
-            )
-
+        # 4. Sort actions by timestep and enqueue them
         with self.action_queue_lock:
-            self.action_queue = future_action_queue
+            # Clear the queue (ensure it's empty before adding new actions)
+            while not self.action_queue.empty():
+                self.action_queue.get_nowait()
+
+            # Sort actions by timestep and enqueue them
+            for ts in sorted(action_dict.keys()):
+                self.action_queue.put({"timestep": ts, "action": action_dict[ts]})
 
     def request_actions(self):
         while not self.stop_event.is_set():
@@ -288,14 +302,6 @@ def async_client_zmq(config: PolicyClientConfig):
 
     policy = PolicyClient(config)
     robot = MockRobot(obs_features=policy.input_features)
-
-    # while True:
-    #     t0 = time.perf_counter()
-    #     obs = robot.get_observation(random=True)
-    #     print(f"Taken {(time.perf_counter() - t0) * 1000:.02f}ms to get observation")
-    #     t0 = time.perf_counter()
-    #     pickle.dumps(obs)  # nosec
-    #     print(f"Taken {(time.perf_counter() - t0) * 1000:.02f}ms to serialize observation")
 
     try:
         dt = 1.0 / 30.0
