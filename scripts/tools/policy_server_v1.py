@@ -23,6 +23,7 @@ python scripts/tools/policy_server.py \
 ```
 """
 
+import dataclasses
 import pickle  # nosec
 import socket
 import threading
@@ -108,7 +109,6 @@ class PolicyServer:
     def __init__(self, config: PolicyServerConfig):
         # Load policy
         policy_class = get_policy_class(config.policy_type)
-        self.policy_name = policy_class.__name__
         print(f'[bright_yellow]Loading model: "{config.pretrained_name_or_path}" ...[/bright_yellow]')
         t0 = time.perf_counter()
         self.policy = policy_class.from_pretrained(config.pretrained_name_or_path)
@@ -170,6 +170,20 @@ class PolicyServer:
     def policy_config(self):
         return asdict(self.policy.config)
 
+    def handle_policy_config_request(self, client_id):
+        """Handle incoming policy config request and send the config back to the client."""
+        self.socket.send_multipart(
+            [
+                client_id,
+                pickle.dumps(
+                    {
+                        "policy_config": self.policy_config,
+                        "policy_name": self.policy.__class__.__name__,
+                    }
+                ),
+            ]
+        )  # Must use send_multipart to reply to the correct client
+
     def predict_action_chunk(self, observation: dict[str, torch.Tensor], i0: int) -> dict[int, torch.Tensor]:
         """Predict action chunk for the given observation.
         Args:
@@ -213,83 +227,89 @@ class PolicyServer:
     def run(self) -> None:
         ip = get_local_ip()
         print(f"[bright_green]Policy server listen on: tcp://{ip}:{self.bind_port}[/bright_green]")
-        poller = zmq.Poller()
-        poller.register(self.socket, zmq.POLLIN)
-        last_step = 0
+        last_step = -1
         try:
             with Live(console=self.console, refresh_per_second=4) as live:
                 while self.stop_event.is_set() is False:
-                    delay_time = time.perf_counter()
-                    events = dict(poller.poll(timeout=200))
-                    delay_time = (time.perf_counter() - delay_time) * 1000  # convert to ms
+                    if self.socket.poll(timeout=10):  # Wait for a message with a timeout
+                        # Receive the full message (identity + payload)
+                        delay_time = time.perf_counter()
+                        frames = self.socket.recv_multipart()  # [identity, payload]
+                        delay_time = (time.perf_counter() - delay_time) * 1000  # convert to ms
 
-                    if self.socket not in events:
-                        continue
+                        unpac_time = time.perf_counter()
+                        client_id = frames[0]  # Identity of the client (for ROUTER socket)
+                        payload = pickle.loads(frames[-1])
+                        unpac_time = (time.perf_counter() - unpac_time) * 1000  # convert to ms
 
-                    payload = self.socket.recv()
+                        if not isinstance(payload, dict):
+                            print(f"Invalid message format: expected dict, got {type(payload).__name__}")
+                            continue
 
-                    unpac_time = time.perf_counter()
-                    message = pickle.loads(payload)
-                    unpac_time = (time.perf_counter() - unpac_time) * 1000  # convert to ms
+                        # Handle policy config request
+                        if payload.get("__request_policy_config__", False):
+                            self.handle_policy_config_request(client_id)
+                            continue
 
-                    if not isinstance(message, dict):
-                        print(f"Invalid message format: expected dict, got {type(message).__name__}")
-                        self.socket.send(b"")
-                        continue
+                        observation = payload.get("observation")
+                        sendtime = payload.get("sendtime", time.time())
+                        timestep = payload.get("timestep", 0)
+                        if observation is None:
+                            print("No observation found in the payload.")
+                            continue
+                        if timestep == last_step and timestep != 0:
+                            continue
 
-                    if message.get("__request_policy_name__", False):
-                        self.socket.send(pickle.dumps({"policy_name": self.policy_name}))
-                        continue
+                        # Handle action request
+                        obs_info = {
+                            k: (v.dtype, tuple(v.shape))
+                            for k, v in observation.items()
+                            if isinstance(v, torch.Tensor)
+                        }
 
-                    if message.get("__request_policy_config__", False):
-                        self.socket.send(pickle.dumps({"policy_config": self.policy_config}))
-                        continue
+                        infer_time = time.perf_counter()
+                        actions = self.predict_action_chunk(observation, i0=timestep)
+                        infer_time = (time.perf_counter() - infer_time) * 1000  # convert to ms
+                        self.socket.send_multipart(
+                            [client_id, pickle.dumps(actions)], flags=zmq.NOBLOCK
+                        )  # Reply with actions to the correct client
 
-                    observation = message.get("observation", {})
-                    obs_info = {
-                        k: (v.dtype, tuple(v.shape))
-                        for k, v in observation.items()
-                        if isinstance(v, torch.Tensor)
-                    }
+                        # Update live panel
+                        sendtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(sendtime))
 
-                    timestamp = message.get("timestamp", time.time())
-                    timestep = message.get("timestep", 0)
+                        table = Table(show_header=False, box=None, padding=(0, 1))
+                        table.add_column(style="bold cyan", no_wrap=True)
+                        table.add_column(style="white", no_wrap=True)
+                        table.add_column(style="bold cyan", no_wrap=True)
+                        table.add_column(style="white", no_wrap=True)
 
-                    infer_time = time.perf_counter()
-                    actions = self.predict_action_chunk(observation, i0=timestep)
-                    infer_time = (time.perf_counter() - infer_time) * 1000  # convert to ms
-                    self.socket.send(pickle.dumps(actions))
+                        skip = timestep - last_step if last_step != -1 else 0
+                        table.add_row(
+                            "time steps", f"{timestep} (+{skip})", "delay_time", f"{delay_time:.2f} ms"
+                        )
+                        last_step = timestep
+                        table.add_row(
+                            "chunk_size", str(self.chunk_size), "unpac_time", f"{unpac_time:.2f} ms"
+                        )
+                        table.add_row(
+                            "action_dim", str(self.action_dim), "infer_time", f"{infer_time:.2f} ms"
+                        )
+                        table.add_row("", "", "", "")
+                        if "task" in observation:
+                            table.add_row("task", observation["task"], "", "")
+                        for k, v in obs_info.items():
+                            table.add_row(k, str(v[0]), str(v[1]))
 
-                    # Update live panel
-                    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
-
-                    table = Table(show_header=False, box=None, padding=(0, 1))
-                    table.add_column(style="bold cyan", no_wrap=True)
-                    table.add_column(style="white", no_wrap=True)
-                    table.add_column(style="bold cyan", no_wrap=True)
-                    table.add_column(style="white", no_wrap=True)
-
-                    skip = timestep - last_step
-                    table.add_row("time steps", f"{timestep} (+{skip})", "delay_time", f"{delay_time:.2f} ms")
-                    last_step = timestep
-                    table.add_row("chunk_size", str(self.chunk_size), "unpac_time", f"{unpac_time:.2f} ms")
-                    table.add_row("action_dim", str(self.action_dim), "infer_time", f"{infer_time:.2f} ms")
-                    table.add_row("", "", "", "")
-                    if "task" in observation:
-                        table.add_row("task", observation["task"], "", "")
-                    for k, v in obs_info.items():
-                        table.add_row(k, str(v[0]), str(v[1]))
-                    panel = Panel(
-                        table,
-                        title=f"{self.policy_name} <{self.policy_config.get('repo_id', '')}>",
-                        subtitle=f"{timestamp}",
-                    )
-                    live.update(panel)
+                        panel = Panel(
+                            table,
+                            title=f"{self.policy.__class__.__name__} <{self.policy_config.get('repo_id', '')}>",
+                            subtitle=f"{sendtime}",
+                        )
+                        live.update(panel)
         except KeyboardInterrupt:
             print("\n[bright_yellow]Received Ctrl+C, shutting down policy server...[/bright_yellow]")
         finally:
             self.stop_event.set()
-            poller.unregister(self.socket)
             self.socket.close(linger=0)
             self.context.term()
             print("Policy Server terminated")
