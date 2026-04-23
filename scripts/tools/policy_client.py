@@ -191,7 +191,6 @@ class PolicyClient:
             internal_queue = self.action_queue
 
         current_action_queue = {x["timestep"]: x["action"] for x in internal_queue.queue}
-
         for timestep, action in incoming_actions.items():
             with self.timestep_lock:
                 current_timestep = self.timestep

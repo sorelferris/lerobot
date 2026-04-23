@@ -31,6 +31,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import draccus
+import numpy as np
 import torch
 import zmq
 from rich import print
@@ -122,7 +123,7 @@ class PolicyServer:
         self.policy.to(config.policy_device)
         print(self.policy.config)
         print(f"Taken {time.perf_counter() - t0:.2f} seconds to put policy on {config.policy_device}.")
-        self.chunk_size = 0
+        self.chunk_size = config.actions_per_chunk
         self.action_dim = 0
         # Make preprocessor and postprocessor
         rename_map = config.rename_map or {
@@ -198,6 +199,7 @@ class PolicyServer:
 
         observation = self.preprocessor(observation)
         action_tensor = self.policy.predict_action_chunk(observation)
+        action_tensor = action_tensor[:, : self.chunk_size, :]
         _, self.chunk_size, self.action_dim = action_tensor.shape  # (B, chunk_size, action_dim)
 
         # Process each action in the chunk
@@ -256,7 +258,7 @@ class PolicyServer:
                     obs_info = {
                         k: (v.dtype, tuple(v.shape))
                         for k, v in observation.items()
-                        if isinstance(v, torch.Tensor)
+                        if isinstance(v, (torch.Tensor, np.ndarray))
                     }
 
                     timestamp = message.get("timestamp", time.time())
