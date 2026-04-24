@@ -85,7 +85,8 @@ class PolicyClient:
         self.policy_repo_id = self.policy_config.get("repo_id", "N/A")
         self.input_features = self.policy_config.get("input_features", {})
         self.output_features = self.policy_config.get("output_features", {})
-        print(f"[bright_yellow]Using policy: {self.policy_name} <{self.policy_repo_id}>[/bright_yellow]")
+        self.policy_name_with_repo_id = f"{self.policy_name}<{self.policy_repo_id}>"
+        print(f"[bright_yellow]Using policy: {self.policy_name_with_repo_id}[/bright_yellow]")
         print("[bright_yellow]Input features:[/bright_yellow]")
         for key, value in self.input_features.items():
             print(f"  - {key}: {value}")
