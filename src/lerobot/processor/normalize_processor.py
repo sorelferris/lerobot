@@ -330,12 +330,13 @@ class _NormalizationMixin:
                     "MEAN_STD normalization mode requires mean and std stats, please update the dataset with the correct stats"
                 )
 
-            mean, std = stats["mean"], stats["std"]
-            # Avoid division by zero by adding a small epsilon.
+            # Treat near-zero std as constant dimensions and map them to 0 during normalization.
+            small_std_mask = torch.abs(std) <= self.eps
             denom = std + self.eps
             if inverse:
                 return tensor * std + mean
-            return (tensor - mean) / denom
+            normalized = (tensor - mean) / denom
+            return torch.where(small_std_mask, torch.zeros_like(normalized), normalized)
 
         if norm_mode == NormalizationMode.MIN_MAX:
             min_val = stats.get("min", None)
