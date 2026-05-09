@@ -406,7 +406,12 @@ class _NormalizationMixin:
             )
             if inverse:
                 return (tensor + 1.0) * denom / 2.0 + q10
-            return 2.0 * (tensor - q10) / denom - 1.0
+
+            normalized = 2.0 * (tensor - q10) / denom - 1.0
+            # Reset extreme values to 0 after normalization when quantiles are identical (denom is near zero)
+            small_denom_mask = denom < 1e-3
+            normalized = torch.where(small_denom_mask, torch.zeros_like(normalized), normalized)
+            return normalized
 
         # If necessary stats are missing, return input unchanged.
         return tensor
