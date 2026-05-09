@@ -330,13 +330,17 @@ class _NormalizationMixin:
                     "MEAN_STD normalization mode requires mean and std stats, please update the dataset with the correct stats"
                 )
 
-            # Treat near-zero std as constant dimensions and map them to 0 during normalization.
-            small_std_mask = torch.abs(std) <= self.eps
-            denom = std + self.eps
+            # Unnormalization
             if inverse:
                 return tensor * std + mean
-            normalized = (tensor - mean) / denom
-            return torch.where(small_std_mask, torch.zeros_like(normalized), normalized)
+
+            # Avoid division by zero by adding epsilon when std is near-zero
+            normalized = (tensor - mean) / (std + self.eps)
+
+            # Avoid extreme values by resetting them to 0 after normalization
+            normalized = torch.where(std < 1e-3, torch.zeros_like(normalized), normalized)
+
+            return normalized
 
         if norm_mode == NormalizationMode.MIN_MAX:
             min_val = stats.get("min", None)
@@ -358,7 +362,11 @@ class _NormalizationMixin:
                 # Map from [-1, 1] back to [min, max]
                 return (tensor + 1) / 2 * denom + min_val
             # Map from [min, max] to [-1, 1]
-            return 2 * (tensor - min_val) / denom - 1
+            normalized = 2 * (tensor - min_val) / denom - 1
+            # Reset extreme values to 0 after normalization when min and max are identical (denom is near zero)
+            small_denom_mask = denom < 1e-3
+            normalized = torch.where(small_denom_mask, torch.zeros_like(normalized), normalized)
+            return normalized
 
         if norm_mode == NormalizationMode.QUANTILES:
             q01 = stats.get("q01", None)
@@ -375,7 +383,13 @@ class _NormalizationMixin:
             )
             if inverse:
                 return (tensor + 1.0) * denom / 2.0 + q01
-            return 2.0 * (tensor - q01) / denom - 1.0
+
+            normalized = 2.0 * (tensor - q01) / denom - 1.0
+            # Reset extreme values to 0 after normalization when quantiles are identical (denom is near zero)
+            small_denom_mask = denom < 1e-3
+            normalized = torch.where(small_denom_mask, torch.zeros_like(normalized), normalized)
+
+            return normalized
 
         if norm_mode == NormalizationMode.QUANTILE10:
             q10 = stats.get("q10", None)

@@ -16,6 +16,7 @@ lerobot-train \
   --dataset.root="data/train_data/lerobot_v3.0/${dataset}" \
   --policy.type="act" \
   --policy.repo_id="sorel/act-${dataset}" \
-  --wandb.enable=true \
-  --batch_size=32 \
+  --policy.push_to_hub=false \
+  --wandb.enable=false \
+  --batch_size=8 \
   --steps=${steps}
