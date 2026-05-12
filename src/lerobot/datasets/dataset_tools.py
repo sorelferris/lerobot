@@ -1781,3 +1781,95 @@ def convert_image_to_video_dataset(
 
     # Return new dataset
     return LeRobotDataset(repo_id=repo_id, root=output_dir)
+
+
+def add_episode_field(
+    dataset: LeRobotDataset,
+    field_name: str | None = None,
+    values: dict[int, str | int | float] | None = None,
+) -> None:
+    """
+    Add a new field to all episodes in a LeRobot dataset. (Warning: modifies dataset in-place)
+    This function allows you to add a new field to the episodes metadata of an existing LeRobot dataset.
+    You must specify a mapping of episode indices to values for the new field.
+    Args:
+        dataset: The source LeRobotDataset to modify in-place.
+        field_name: The name of the new field to add to each episode's metadata.
+        values: A dictionary mapping episode indices to their corresponding values for the new field.
+                For example, {0: "success", 1: "failure", 2: "success"} would set episode 0 to "success",
+                episode 1 to "failure", and episode 2 to "success". All episodes in the dataset must be included in this mapping.
+
+    Returns:
+        None
+
+    Example:
+        dataset = LeRobotDataset("lerobot/aloha_sim")
+        add_episode_field(
+            dataset=dataset,
+            field_name="outcome",
+            values={0: "success", 1: "failure", 2: "success"},
+        )
+    """
+    if field_name is None or not field_name.strip():
+        raise ValueError("field_name must be a non-empty string")
+
+    if values is None:
+        raise ValueError("values must be provided")
+
+    # Check if values cover all episodes
+    expected_episode_indices = set(range(dataset.meta.total_episodes))
+    provided_episode_indices = set(values.keys())
+
+    missing_indices = expected_episode_indices - provided_episode_indices
+    extra_indices = provided_episode_indices - expected_episode_indices
+
+    if missing_indices:
+        missing_preview = sorted(missing_indices)[:10]
+        raise ValueError(
+            "values is missing episode indices: "
+            f"{missing_preview}"
+            f"{'...' if len(missing_indices) > 10 else ''}"
+        )
+
+    if extra_indices:
+        extra_preview = sorted(extra_indices)[:10]
+        raise ValueError(
+            "values contains invalid episode indices: "
+            f"{extra_preview}"
+            f"{'...' if len(extra_indices) > 10 else ''}"
+        )
+
+    # Process each parquet file
+    episodes_dir = dataset.root / "meta" / "episodes"
+    if not episodes_dir.exists():
+        raise FileNotFoundError(f"Episodes directory not found: {episodes_dir}")
+
+    parquet_files = sorted(episodes_dir.rglob("*.parquet"))
+    if not parquet_files:
+        raise FileNotFoundError(f"No episode parquet files found in: {episodes_dir}")
+
+    logging.info(f"Adding episode field '{field_name}' to {dataset.repo_id}")
+
+    for parquet_path in tqdm(parquet_files, desc="Updating episodes metadata"):
+        df = pd.read_parquet(parquet_path)
+
+        if "episode_index" not in df.columns:
+            raise ValueError(
+                f"Missing required column 'episode_index' in episode metadata file: {parquet_path}"
+            )
+
+        df[field_name] = df["episode_index"].map(values)
+
+        if df[field_name].isna().any():
+            unresolved = sorted(df.loc[df[field_name].isna(), "episode_index"].unique().tolist())
+            raise ValueError(
+                f"Could not resolve values for episode indices in file {parquet_path}: {unresolved}"
+            )
+
+        df.to_parquet(parquet_path, index=False)
+
+    dataset.meta.episodes = load_episodes(dataset.root)
+
+    logging.info(
+        f"Added field '{field_name}' to {dataset.meta.total_episodes} episodes in dataset {dataset.repo_id}"
+    )
