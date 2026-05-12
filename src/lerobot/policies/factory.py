@@ -488,8 +488,8 @@ def make_policy(
     #     cfg.input_features = {key: ft for key, ft in features.items() if key not in cfg.output_features}
 
     #! hard code the input and output features
-    # Define input features as all features with type STATE
-    cfg.input_features = {key: ft for key, ft in cfg.input_features.items() if ft.type is FeatureType.STATE}
+    # Define input features excluding any action features
+    cfg.input_features = {key: ft for key, ft in cfg.input_features.items() if ACTION not in key}
     # Define output features as the exact feature "action"
     cfg.output_features = {key: ft for key, ft in cfg.output_features.items() if key == ACTION}
 
