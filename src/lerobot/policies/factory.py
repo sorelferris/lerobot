@@ -489,9 +489,9 @@ def make_policy(
 
     #! hard code the input and output features
     # Define input features excluding any action features
-    cfg.input_features = {key: ft for key, ft in cfg.input_features.items() if ACTION not in key}
+    cfg.input_features = {key: ft for key, ft in cfg.features.items() if ACTION not in key}
     # Define output features as the exact feature "action"
-    cfg.output_features = {key: ft for key, ft in cfg.output_features.items() if key == ACTION}
+    cfg.output_features = {key: ft for key, ft in cfg.features.items() if key == ACTION}
 
     kwargs["config"] = cfg
 
