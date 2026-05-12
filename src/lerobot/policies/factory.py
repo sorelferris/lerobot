@@ -483,9 +483,16 @@ def make_policy(
             raise ValueError("env_cfg cannot be None when ds_meta is not provided")
         features = env_to_policy_features(env_cfg)
 
-    cfg.output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
-    if not cfg.input_features:
-        cfg.input_features = {key: ft for key, ft in features.items() if key not in cfg.output_features}
+    # cfg.output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
+    # if not cfg.input_features:
+    #     cfg.input_features = {key: ft for key, ft in features.items() if key not in cfg.output_features}
+
+    #! hard code the input and output features
+    # Define input features as all features with type STATE
+    cfg.input_features = {key: ft for key, ft in cfg.input_features.items() if ft.type is FeatureType.STATE}
+    # Define output features as the exact feature "action"
+    cfg.output_features = {key: ft for key, ft in cfg.output_features.items() if key == ACTION}
+
     kwargs["config"] = cfg
 
     # Pass dataset_stats to the policy if available (needed for some policies like SARM)
