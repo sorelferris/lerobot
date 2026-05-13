@@ -25,7 +25,7 @@ python src/lerobot/scripts/lerobot_train.py\
     --policy.device=cuda \
     --policy.dtype=bfloat16 \
     --policy.freeze_vision_encoder=false \
-    --policy.train_expert_only=true \
+    --policy.train_expert_only=false \
     --wandb.enable=true \
     --batch_size=32 \
     --steps=50_000
