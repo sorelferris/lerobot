@@ -25,7 +25,7 @@ VALUE_TRAIN_CONFIG_NAME = "value_train_config.json"
 
 @dataclass
 class ValueTargetsConfig:
-    success_field: str = "episode_success"
+    success_field: str = "outcome"
     default_success: str = "failure"
     c_fail_coef: float = 1.0
     target_field: str = "observation.value_target"

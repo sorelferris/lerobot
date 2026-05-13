@@ -323,16 +323,32 @@ class Pistar06Model(nn.Module):
         if cfg.freeze_vision_encoder:
             _freeze_module(self.vision_encoder)
 
+    def _extract_vision_features(self, outputs: Any) -> Tensor:
+        if isinstance(outputs, torch.Tensor):
+            return outputs
+
+        pooler_output = getattr(outputs, "pooler_output", None)
+        if pooler_output is not None:
+            return pooler_output
+
+        last_hidden_state = getattr(outputs, "last_hidden_state", None)
+        if last_hidden_state is not None:
+            return last_hidden_state.mean(dim=1)
+
+        if isinstance(outputs, (tuple, list)) and outputs:
+            first_output = outputs[0]
+            if isinstance(first_output, torch.Tensor):
+                return first_output if first_output.ndim == 2 else first_output.mean(dim=1)
+
+        raise ValueError("Unsupported vision encoder output. Expected tensor or model output with features.")
+
     def _encode_images(self, flat_images: Tensor) -> Tensor:
         if hasattr(self.vision_encoder, "get_image_features"):
-            return self.vision_encoder.get_image_features(pixel_values=flat_images)
+            vision_features = self.vision_encoder.get_image_features(pixel_values=flat_images)
+            return self._extract_vision_features(vision_features)
 
         vision_outputs = self.vision_encoder(pixel_values=flat_images, return_dict=True)
-        if hasattr(vision_outputs, "pooler_output") and vision_outputs.pooler_output is not None:
-            return vision_outputs.pooler_output
-        if hasattr(vision_outputs, "last_hidden_state"):
-            return vision_outputs.last_hidden_state.mean(dim=1)
-        raise ValueError("Unsupported vision encoder output. Expected pooler_output or last_hidden_state.")
+        return self._extract_vision_features(vision_outputs)
 
     def _encode_language(self, input_ids: Tensor, attention_mask: Tensor) -> Tensor:
         outputs = self.language_model(

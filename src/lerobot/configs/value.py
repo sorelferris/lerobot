@@ -19,7 +19,7 @@ class ValueInferenceDatasetConfig:
     episodes: list[int] | None = None
     revision: str | None = None
     download_videos: bool = True
-    success_field: str = "episode_success"
+    success_field: str = "outcome"
     default_success: str = "failure"
 
     def validate(self) -> None:
