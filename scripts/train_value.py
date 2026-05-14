@@ -75,10 +75,7 @@ def update_policy(
 
 
 @parser.wrap()
-def value_train(
-    cfg: ValueTrainPipelineConfig,
-    accelerator: Accelerator | None = None,
-):
+def value_train(cfg: ValueTrainPipelineConfig, accelerator: Accelerator | None = None):
     cfg.validate()
 
     if accelerator is None:

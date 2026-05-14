@@ -21,8 +21,8 @@ python scripts/train_policy_by_recap.py \
     --policy.device=cuda \
     --policy.dtype=bfloat16 \
     --policy.freeze_vision_encoder=false \
-    --policy.train_expert_only=true \
-    --batch_size=1 \
+    --policy.train_expert_only=false \
+    --batch_size=32 \
     --steps=${steps} \
     --acp.enable=true \
     --acp.indicator_field="complementary_info.acp_indicator" \
