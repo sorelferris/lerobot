@@ -17,7 +17,7 @@ python scripts/infer_value.py \
     --dataset.root="${data_dir}/${dataset}" \
     --inference.checkpoint_path="${ckpt}" \
     --runtime.device=cuda \
-    --runtime.batch_size=128 \
+    --runtime.batch_size=64 \
     --acp.enable=true \
     --acp.n_step=50 \
     --acp.positive_ratio=0.3 \

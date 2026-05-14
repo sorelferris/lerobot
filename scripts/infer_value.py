@@ -670,15 +670,15 @@ def run_value_inference_pipeline(
         logging.info("Wrote value annotations to dataset root: %s", dataset.root)
 
         # Sync computed columns into the in-memory hf_dataset so viz can read them
-        for field, values in columns.items():
-            if field in dataset.hf_dataset.column_names:
-                # TODO: fix this bug
-                dataset.hf_dataset = dataset.hf_dataset.remove_columns([field])
-            dataset.hf_dataset = dataset.hf_dataset.add_column(field, values.tolist())
+        # for field, values in columns.items():
+        #     if field in dataset.hf_dataset.column_names:
+        #         # TODO: fix this bug
+        #         dataset.hf_dataset = dataset.hf_dataset.remove_columns([field])
+        #     dataset.hf_dataset = dataset.hf_dataset.add_column(field, values.tolist())
 
-        viz_outputs: list[str] = []
-        if cfg.viz.enable:
-            viz_outputs = _export_visualization_outputs(dataset=dataset, cfg=cfg, output_dir=output_dir)
+        # viz_outputs: list[str] = []
+        # if cfg.viz.enable:
+        #     viz_outputs = _export_visualization_outputs(dataset=dataset, cfg=cfg, output_dir=output_dir)
 
         result = {
             "main_process": True,

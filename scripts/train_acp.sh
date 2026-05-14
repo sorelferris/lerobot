@@ -22,7 +22,7 @@ python scripts/train_acp.py \
     --policy.dtype=bfloat16 \
     --policy.freeze_vision_encoder=false \
     --policy.train_expert_only=false \
-    --batch_size=32 \
+    --batch_size=16 \
     --steps=${steps} \
     --acp.enable=true \
     --acp.indicator_field="complementary_info.acp_indicator" \
