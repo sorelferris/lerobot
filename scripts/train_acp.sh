@@ -10,14 +10,14 @@ fi
 
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
-python scripts/train_policy_by_recap.py \
+python scripts/train_acp.py \
     --job_name="pistar05-${dataset}" \
     --dataset.repo_id="sorel/${dataset}" \
     --dataset.root="data/train_data/lerobot_v3.0/${dataset}" \
     --policy.type="pi05" \
     --policy.pretrained_path="lerobot/pi05_base" \
     --policy.push_to_hub=false \
-    --policy.repo_id="sorel/pi05-rl-${dataset}" \
+    --policy.repo_id="sorel/pistar05-${dataset}" \
     --policy.device=cuda \
     --policy.dtype=bfloat16 \
     --policy.freeze_vision_encoder=false \
