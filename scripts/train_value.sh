@@ -28,7 +28,7 @@ python scripts/train_value.py \
   --value.dtype=bfloat16 \
   --value.push_to_hub=false \
   --value.repo_id="sorel/${dataset}-value" \
-  --batch_size=8 \
+  --batch_size=16 \
   --steps="${steps}" \
   --output_dir="${ckpt_dir}/${dataset}" \
-  --wandb.enable=false
+  --wandb.enable=true
