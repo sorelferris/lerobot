@@ -676,6 +676,12 @@ class Pistar06Policy(PreTrainedPolicy):
         episodes = episodes_ds[:]
         n_episodes = len(episodes_ds)
         has_success = targets_cfg.success_field in episodes_ds.column_names
+        if not has_success:
+            columns = episodes_ds.column_names.copy()
+            print(
+                f"Missing success field '{targets_cfg.success_field}' in episodes. Exsiting fields: {columns}."
+            )
+            raise ValueError(f"Missing success field '{targets_cfg.success_field}' in episodes.")
 
         episode_info: dict[int, EpisodeTargetInfo] = {}
         task_max_length: dict[int, int] = {}

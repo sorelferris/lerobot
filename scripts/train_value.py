@@ -138,6 +138,10 @@ def value_train(
     elif is_main_process:
         logging.info("Value model does not define a raw-batch hook; using dataset targets as-is.")
 
+    assert value_target_raw_batch_hook is not None, (
+        "Value model must define a raw-batch hook for target construction."
+    )
+
     accelerator.wait_for_everyone()
 
     processor_kwargs = {}
