@@ -466,8 +466,7 @@ def run_value_inference_pipeline(
         viz_outputs: list[str] = []
         if accelerator.is_main_process:
             logging.info(
-                "ACP disabled; skipping value inference and reusing existing '%s' annotations.",
-                cfg.acp.value_field,
+                f"ACP disabled; skipping value inference and reusing existing '{cfg.acp.value_field}' annotations."
             )
             if cfg.acp.value_field not in raw_frames.column_names:
                 raise KeyError(
@@ -673,6 +672,7 @@ def run_value_inference_pipeline(
         # Sync computed columns into the in-memory hf_dataset so viz can read them
         for field, values in columns.items():
             if field in dataset.hf_dataset.column_names:
+                # TODO: fix this bug
                 dataset.hf_dataset = dataset.hf_dataset.remove_columns([field])
             dataset.hf_dataset = dataset.hf_dataset.add_column(field, values.tolist())
 

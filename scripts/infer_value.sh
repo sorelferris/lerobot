@@ -24,5 +24,5 @@ python scripts/infer_value.py \
     --acp.value_field="complementary_info.value" \
     --acp.advantage_field="complementary_info.advantage" \
     --acp.indicator_field="complementary_info.acp_indicator" \
-    --viz.enable=true \
+    --viz.enable=false \
     --output_dir="outputs/value_infer/value-${dataset}"
