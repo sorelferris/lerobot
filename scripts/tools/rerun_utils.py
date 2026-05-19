@@ -36,6 +36,7 @@ class RerunLogger:
         self._next_frame_seq = 0
         # Camera slots are inferred from available observation.images.* keys.
         self._camera_slots: list[str] = []
+        self._state_value_history: list[float] = []
 
         # Isolated recording stream - never touches global rr.init() state.
         self._rec = rr.RecordingStream(
@@ -59,7 +60,11 @@ class RerunLogger:
             return
 
         camera_views = [
-            rr.blueprint.Spatial2DView(origin="/", contents=[slot], name=slot.replace("_", " ").title())
+            rr.blueprint.Spatial2DView(
+                origin="/",
+                contents=[slot, f"overlays/{slot}/state_value_curve", f"overlays/{slot}/state_value_label"],
+                name=slot.replace("_", " ").title(),
+            )
             for slot in self._camera_slots
         ]
         joint_views = []
@@ -119,6 +124,7 @@ class RerunLogger:
         ``observation.state``              : array-like, used to infer joint count
         ``teleop``                         : array-like (optional)
         ``policy``                         : array-like (optional)
+        ``state_value``                    : scalar (optional), overlaid as a trend curve on camera views
         ``framestep``                      : int (optional). If missing, an internal increasing sequence is used.
         """
         if self._joint_count is None:
@@ -199,6 +205,7 @@ class RerunLogger:
                     )
                     self._connect_stream()
                     self._next_frame_seq = 0
+                    self._state_value_history.clear()
             finally:
                 self._queue.task_done()
 
@@ -221,6 +228,24 @@ class RerunLogger:
                 arr = np.clip(arr, 0, 255).astype(np.uint8)
         return arr
 
+    def _compute_state_value_points(self, image: np.ndarray) -> np.ndarray | None:
+        if image.ndim < 2 or len(self._state_value_history) < 2:
+            return None
+
+        height, width = image.shape[0], image.shape[1]
+        x0, x1 = width * 0.05, width * 0.95
+        y0, y1 = height * 0.75, height * 0.9
+        values = np.asarray(self._state_value_history, dtype=np.float32)
+        v_min = float(values.min())
+        v_max = float(values.max())
+        if abs(v_max - v_min) < 1e-8:
+            ys = np.full_like(values, (y0 + y1) * 0.5)
+        else:
+            ys = y1 - ((values - v_min) / (v_max - v_min)) * (y1 - y0)
+
+        xs = np.linspace(x0, x1, num=len(values), dtype=np.float32)
+        return np.stack([xs, ys.astype(np.float32)], axis=1)
+
     def _log_sync(self, data: dict) -> None:
         frame_seq = data.get("framestep")
         frame_seq = self._next_frame_seq if frame_seq is None else int(frame_seq)
@@ -228,12 +253,36 @@ class RerunLogger:
         rr.set_time("frame", sequence=frame_seq, recording=self._rec)
         self._next_frame_seq = frame_seq + 1
 
-        image_keys = sorted(k for k in data if str(k).startswith("observation.images."))
-        images = [self._to_hwc_uint8_numpy(data[k]) for k in image_keys if data.get(k) is not None]
-        # Log up to 3 available camera streams; do not pad missing cameras.
-        for slot_idx, image in enumerate(images[: len(self._camera_slots)]):
-            slot_name = self._camera_slots[slot_idx]
+        state_value = data.get("state_value")
+        if state_value is not None:
+            self._state_value_history.append(float(np.asarray(state_value).reshape(-1)[0]))
+
+        for slot_name in self._camera_slots:
+            if data.get(slot_name) is None:
+                continue
+
+            image = self._to_hwc_uint8_numpy(data[slot_name])
             rr.log(slot_name, rr.Image(image).compress(), recording=self._rec)
+
+            points = self._compute_state_value_points(image)
+            if points is not None:
+                rr.log(
+                    f"overlays/{slot_name}/state_value_curve",
+                    rr.LineStrips2D([points], colors=[(32, 220, 128)], radii=[1.5]),
+                    recording=self._rec,
+                )
+                latest_label_pos = points[-1] + np.array([8.0, -8.0], dtype=np.float32)
+                rr.log(
+                    f"overlays/{slot_name}/state_value_label",
+                    rr.Points2D(
+                        [latest_label_pos],
+                        colors=[(32, 220, 128)],
+                        labels=[f"{self._state_value_history[-1]:.3f}"],
+                        show_labels=True,
+                        radii=[0.0],
+                    ),
+                    recording=self._rec,
+                )
 
         for i in range(self._joint_count):
             rr.log(f"states/{i + 1}", rr.Scalars(float(data["observation.state"][i])), recording=self._rec)
@@ -241,55 +290,3 @@ class RerunLogger:
                 rr.log(f"teleop/{i + 1}", rr.Scalars(float(data["teleop"][i])), recording=self._rec)
             if data.get("policy") is not None:
                 rr.log(f"policy/{i + 1}", rr.Scalars(float(data["policy"][i])), recording=self._rec)
-
-
-if __name__ == "__main__":
-    import argparse
-    import time
-
-    from lerobot.replay_bot import ReplayBot, ReplayBotConfig
-
-    parser = argparse.ArgumentParser(description="Replay dataset episode(s) and stream them to Rerun")
-    parser.add_argument("--repo-id", required=True, help="LeRobot dataset repo id, e.g. lerobot/pusht")
-    parser.add_argument("--root", default=None, help="Optional local dataset root")
-    parser.add_argument("--episode", default="0,1,2", help="Episode index or comma-separated indices")
-    parser.add_argument(
-        "--url",
-        required=True,
-        help="Rerun URL. Use 127.0.0.1 or localhost to spawn a local viewer, or a remote address to connect remotely.",
-    )
-    parser.add_argument("--dt", type=float, default=0.02, help="Sleep seconds between frames")
-    parser.add_argument(
-        "--y-range",
-        type=float,
-        nargs=2,
-        default=[-3.14, 3.14],
-        metavar=("YMIN", "YMAX"),
-        help="Y-axis limits for joint time series, e.g. --y-range -3.14 3.14",
-    )
-    parser.add_argument(
-        "--no-ylim",
-        action="store_true",
-        help="Auto-scale Y axis instead of fixed limits.",
-    )
-    args = parser.parse_args()
-
-    y_range = None if args.no_ylim else tuple(args.y_range)
-
-    robot_cfg = ReplayBotConfig(repo_id=args.repo_id, root=args.root, episode=args.episode)
-    robot = ReplayBot(robot_cfg)
-
-    sent_frames = 0
-    with RerunLogger(url=args.url, y_range=y_range) as logger:
-        for episode_index in robot.episodes:
-            robot.load_episode(episode_index)
-            logger.switch_record()  # Switch to new recording for this episode
-            while not robot.is_episode_done:
-                observation = robot.get_observation()
-                action = robot.get_teleop_action()
-                logger.log({"framestep": robot.frame_index, **observation, **action})
-                robot.send_action({})
-                sent_frames += 1
-                time.sleep(args.dt)
-
-    print(f"Done - sent {sent_frames} frames to {args.url}")

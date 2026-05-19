@@ -57,6 +57,8 @@ class ReplayBot:
     def load_episode(self, episode_index: int):
         print(f"Loading episode {episode_index} from dataset {self.config.repo_id}...")
         self.dataset = LeRobotDataset(self.config.repo_id, root=self.config.root, episodes=[episode_index])
+        self.frame_index = 0
+        self.frame_cache = None
 
     def step(self):
         """Advance to the next frame in the currently loaded episode."""
