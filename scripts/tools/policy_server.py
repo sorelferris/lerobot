@@ -119,7 +119,7 @@ class PolicyServer:
         self.policy_name = policy_class.__name__
         print(f'[bright_yellow]Loading model: "{config.pretrained_name_or_path}" ...[/bright_yellow]')
         t0 = time.perf_counter()
-        self.policy = policy_class.from_pretrained(config.pretrained_name_or_path)
+        self.policy = policy_class.from_pretrained(config.pretrained_name_or_path, strict=True)
         self.policy.to(config.policy_device)
         print(self.policy.config)
         print(f"Taken {time.perf_counter() - t0:.2f} seconds to put policy on {config.policy_device}.")
@@ -244,6 +244,14 @@ class PolicyServer:
                     if not isinstance(message, dict):
                         print(f"Invalid message format: expected dict, got {type(message).__name__}")
                         self.socket.send(b"")
+                        continue
+
+                    if message.get("__request_policy_info__", False):
+                        self.socket.send(
+                            pickle.dumps(
+                                {"policy_name": self.policy_name, "policy_config": self.policy_config}
+                            )
+                        )
                         continue
 
                     if message.get("__request_policy_name__", False):
