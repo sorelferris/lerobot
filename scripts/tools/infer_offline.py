@@ -100,10 +100,17 @@ def infer_offline(config: InferOfflineConfig):
                     policy_actions.append(policy_action)
                     store_time = time.perf_counter() - t0
 
+                    state_value = robot.get_state_value()
+
                     # Log to Rerun
                     t0 = time.perf_counter()
                     if logger is not None:
-                        data = {**observation, "teleop": teleop_action, "policy": policy_action}
+                        data = {
+                            **observation,
+                            "teleop": teleop_action,
+                            "policy": policy_action,
+                            "state_value": state_value,
+                        }
                         logger.log(data)
                     log_time = time.perf_counter() - t0
 
