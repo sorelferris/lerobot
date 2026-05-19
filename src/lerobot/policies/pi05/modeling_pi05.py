@@ -1048,6 +1048,7 @@ class PI05Policy(PreTrainedPolicy):
 
         except Exception as e:
             print(f"Warning: Could not load state dict: {e}")
+            raise e
 
         return model
 
