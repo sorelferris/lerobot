@@ -63,27 +63,12 @@ class RerunLogger:
             for slot in self._camera_slots
         ]
         joint_views = []
-
-        # Group joints by fixed chunks of 8: 1..8, 9..16, 17..24, ...
-        joint_groups = []
-        start = 1
-        while start <= self._joint_count:
-            end = min(start + 7, self._joint_count)
-            joint_groups.append((start, end))
-            start = end + 1
-
-        for start, end in joint_groups:
-            grouped_contents = []
-            joint_labels = []
-            for joint_no in range(start, end + 1):
-                joint_labels.append(str(joint_no))
-                grouped_contents.extend([f"states/{joint_no}", f"teleop/{joint_no}", f"policy/{joint_no}"])
-
+        for joint_no in range(1, self._joint_count + 1):
             joint_views.append(
                 rr.blueprint.TimeSeriesView(
                     origin="/",
-                    contents=grouped_contents,
-                    name=",".join(joint_labels),
+                    contents=[f"states/{joint_no}", f"teleop/{joint_no}", f"policy/{joint_no}"],
+                    name=f"joint_{joint_no}",
                     axis_y=rr.blueprint.ScalarAxis(range=self._y_range) if self._y_range else None,
                 )
             )
@@ -101,9 +86,9 @@ class RerunLogger:
         if joint_views:
             bottom_row = rr.blueprint.Grid(
                 *joint_views,
-                grid_columns=len(joint_views),
+                grid_columns=min(4, len(joint_views)),
                 row_shares=[1],
-                column_shares=[1] * len(joint_views),
+                column_shares=[1] * min(4, len(joint_views)),
             )
 
         if top_row and bottom_row:
@@ -262,7 +247,7 @@ if __name__ == "__main__":
     import argparse
     import time
 
-    from lerobot.common.robot_devices.robots.replay_bot import ReplayBot, ReplayBotConfig
+    from lerobot.replay_bot import ReplayBot, ReplayBotConfig
 
     parser = argparse.ArgumentParser(description="Replay dataset episode(s) and stream them to Rerun")
     parser.add_argument("--repo-id", required=True, help="LeRobot dataset repo id, e.g. lerobot/pusht")

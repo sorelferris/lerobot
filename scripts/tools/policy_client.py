@@ -3,10 +3,12 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from math import exp
 from queue import Queue
 
 import draccus
 import torch
+import torch.nn.functional as functional
 import zmq
 from rich import print
 
@@ -37,6 +39,7 @@ AGGREGATE_FUNCTIONS = {
     "latest_only": lambda old, new: new,
     "average": lambda old, new: 0.5 * old + 0.5 * new,
     "conservative": lambda old, new: 0.7 * old + 0.3 * new,
+    "adaptive_ensemble": None,
 }
 
 
@@ -51,8 +54,12 @@ class PolicyClientConfig:
 
     # Aggregate function configuration
     aggregate_fn_name: str = field(
-        default="weighted_average",
+        default="adaptive_ensemble",
         metadata={"help": f"Name of aggregate function to use. Options: {list(AGGREGATE_FUNCTIONS.keys())}"},
+    )
+    adaptive_ensemble_alpha: float = field(
+        default=3.0,
+        metadata={"help": "Alpha used by adaptive_ensemble weighting across repeated timestep predictions."},
     )
 
     def __post_init__(self):
@@ -69,6 +76,11 @@ class PolicyClientConfig:
             available = list(AGGREGATE_FUNCTIONS.keys())
             raise ValueError(f"Unknown aggregate function '{self.aggregate_fn_name}'. Available: {available}")
         self.aggregate_fn = AGGREGATE_FUNCTIONS[self.aggregate_fn_name]
+
+        if self.adaptive_ensemble_alpha < 0:
+            raise ValueError(
+                f"adaptive_ensemble_alpha must be non-negative, got {self.adaptive_ensemble_alpha}"
+            )
 
 
 class PolicyClient:
@@ -106,6 +118,7 @@ class PolicyClient:
         self.stop_event = threading.Event()
         self.action_queue = Queue()
         self.action_queue_lock = threading.Lock()  # Protect queue operations
+        self._action_history_by_timestep: dict[int, list[torch.Tensor]] = {}
         self.action_queue_size = []
         self.action_thread = None
         self.chunk_size = 1
@@ -135,6 +148,7 @@ class PolicyClient:
     def reset(self):
         with self.action_queue_lock:
             self.action_queue = Queue()
+            self._action_history_by_timestep = {}
         self.action_queue_size = []
         with self.timestep_lock:
             self.timestep = 0  # Track the number of timesteps of action
@@ -189,47 +203,73 @@ class PolicyClient:
         with self._last_observation_lock:
             return self._last_observation
 
+    def _adaptive_ensemble_action(self, action_history: list[torch.Tensor]) -> torch.Tensor:
+        if len(action_history) == 1:
+            return action_history[0]
+
+        reference = action_history[-1].reshape(-1)
+        similarities = []
+        for candidate in action_history:
+            similarities.append(
+                functional.cosine_similarity(candidate.reshape(-1), reference, dim=0, eps=1e-7).item()
+            )
+
+        weight_values = [exp(self.config.adaptive_ensemble_alpha * similarity) for similarity in similarities]
+        weight_sum = sum(weight_values)
+        normalized_weights = [weight / weight_sum for weight in weight_values]
+
+        aggregated_action = torch.zeros_like(action_history[-1])
+        for weight, action in zip(normalized_weights, action_history, strict=True):
+            aggregated_action = aggregated_action + action * weight
+
+        return aggregated_action
+
+    def _aggregate_action_history(
+        self, action_history: list[torch.Tensor], aggregate_fn: Callable | None = None
+    ) -> torch.Tensor:
+        if self.config.aggregate_fn_name == "adaptive_ensemble":
+            return self._adaptive_ensemble_action(action_history)
+
+        if aggregate_fn is None:
+            return action_history[-1]
+
+        aggregated_action = action_history[0]
+        for action in action_history[1:]:
+            aggregated_action = aggregate_fn(aggregated_action, action)
+        return aggregated_action
+
+    def _rebuild_action_queue_locked(self, aggregate_fn: Callable | None = None) -> None:
+        rebuilt_queue = Queue()
+        for ts in sorted(self._action_history_by_timestep):
+            rebuilt_queue.put(
+                {
+                    "timestep": ts,
+                    "action": self._aggregate_action_history(
+                        self._action_history_by_timestep[ts], aggregate_fn
+                    ),
+                }
+            )
+        self.action_queue = rebuilt_queue
+
     def aggregate_actions_in_queue(self, incoming_actions: dict, aggregate_fn: Callable = None):
         """Aggregate actions in the queue (SAFE & CORRECT VERSION)"""
-        if aggregate_fn is None:
-
-            def aggregate_fn(old, new):
-                return new
-
         with self.timestep_lock:
             current_timestep = self.timestep
 
-        # Hold the queue lock during read/merge/write so consumers never observe
-        # intermediate empty queue states during queue rebuild.
         with self.action_queue_lock:
-            # 1. Take all actions from the queue safely
-            current_actions = []
-            while not self.action_queue.empty():
-                item = self.action_queue.get_nowait()
-                current_actions.append(item)
+            self._action_history_by_timestep = {
+                ts: history
+                for ts, history in self._action_history_by_timestep.items()
+                if ts >= current_timestep
+            }
 
-            # 2. Convert to a dictionary: timestep -> action
-            action_dict = {}
-            for item in current_actions:
-                ts = item["timestep"]
-                if ts >= current_timestep:  # Keep current and future actions
-                    action_dict[ts] = item["action"]
-
-            # 3. Merge/Aggregate new actions
             for ts, new_act in incoming_actions.items():
                 if ts < current_timestep:
-                    continue  # Skip actions that have already been processed
+                    continue
 
-                if ts in action_dict:
-                    # Same timestep → Aggregate
-                    action_dict[ts] = aggregate_fn(action_dict[ts], new_act)
-                else:
-                    # New timestep → Add
-                    action_dict[ts] = new_act
+                self._action_history_by_timestep.setdefault(ts, []).append(new_act)
 
-            # 4. Sort actions by timestep and enqueue them
-            for ts in sorted(action_dict.keys()):
-                self.action_queue.put({"timestep": ts, "action": action_dict[ts]})
+            self._rebuild_action_queue_locked(aggregate_fn)
 
     def request_actions(self):
         while not self.stop_event.is_set():
@@ -292,11 +332,12 @@ class PolicyClient:
                 ts = action["timestep"]
 
                 if ts < expected_timestep:
-                    # Drop stale actions that are already past due.
+                    self._action_history_by_timestep.pop(ts, None)
                     continue
 
                 if ts == expected_timestep:
                     matched_action = action
+                    self._action_history_by_timestep.pop(ts, None)
                     break
 
                 # ts > expected_timestep: keep this and all remaining future actions.

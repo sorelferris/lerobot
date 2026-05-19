@@ -4,11 +4,11 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+import draccus
 import torch
-import tyro
 from rich import print
 
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 
 
 def _read_single_key() -> str:
@@ -242,6 +242,7 @@ def _replay_episode_interactively(robot: ReplayBot, episode_index: int, step_del
     return True
 
 
+@draccus.wrap()
 def main(config: ReplayBotConfig):
     print(asdict(config))
     robot = ReplayBot(config)
@@ -252,4 +253,4 @@ def main(config: ReplayBotConfig):
 
 
 if __name__ == "__main__":
-    main(tyro.cli(ReplayBotConfig))
+    main()

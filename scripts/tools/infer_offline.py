@@ -1,17 +1,36 @@
+"""
+Offline inference script for running a policy on recorded episodes.
+
+This script replays episodes from a dataset while collecting actions from a policy model
+and comparing them with the original teleop actions. It supports:
+- Real-time inference using PolicyClient
+- Episode replay with MockRobot
+- Frame-by-frame timing and performance metrics
+- Action comparison and visualization
+- Optional remote Rerun logging for visualization
+
+Example usage:
+python scripts/tools/infer_offline.py \
+    --policy.host 127.0.0.1 \
+    --policy.port 8001 \
+    --robot.repo_id record_0429 \
+    --robot.root data/train_data/lerobot_v3.0/record_0429 \
+    --rerun_url rerun+http://172.20.76.73:9876/proxy
+"""
+
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import draccus
 import numpy as np
+from compare_actions import compare_actions
+from policy_client import PolicyClient, PolicyClientConfig
+from rerun_utils import RerunLogger
 from rich import print
 from rich.progress import Progress
 
-from lerobot.async_inference.client import PolicyClient, PolicyClientConfig
-from lerobot.common.robot_devices.robots.replay_bot import ReplayBot, ReplayBotConfig
-from lerobot.common.robot_devices.utils import busy_wait
-from lerobot.common.utils.rerun_utils import RerunLogger
-from lerobot.scripts.compare_actions import compare_actions
+from lerobot.utils.replay_bot import ReplayBot, ReplayBotConfig
 
 
 @dataclass
@@ -23,7 +42,7 @@ class InferOfflineConfig:
     # Limit the frames per second. By default, uses the dataset fps.
     fps: int | None = None
     # Directory to save action data for comparison
-    save_dir: str = "outputs/offline_inference"
+    save_dir: str = "outputs/infer_offline"
     # Optional: Remote Rerun viewer URL. If None, use local viewer.
     rerun_url: str | None = None
 
@@ -45,6 +64,7 @@ def infer_offline(config: InferOfflineConfig):
     try:
         for episode in robot.episodes:
             robot.load_episode(episode)
+            fps = config.fps or robot.ds_meta.info["fps"]
 
             # Reset policy and replay episode
             policy.reset()
@@ -95,7 +115,7 @@ def infer_offline(config: InferOfflineConfig):
                     frame_count += 1
 
                     # Busy-wait to maintain the desired fps
-                    busy_wait(max(0.0, 1.0 / config.fps - (time.perf_counter() - start)))
+                    time.sleep(max(0.0, 1.0 / fps - (time.perf_counter() - start)))
 
                     frame_interval = time.perf_counter() - start
                     real_fps = 1.0 / frame_interval if frame_interval > 0 else float("inf")
