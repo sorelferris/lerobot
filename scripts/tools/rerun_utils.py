@@ -1,5 +1,7 @@
+#!/usr/bin/env python
 import queue
 import threading
+import time
 import uuid
 
 import numpy as np
@@ -290,3 +292,144 @@ class RerunLogger:
                 rr.log(f"teleop/{i + 1}", rr.Scalars(float(data["teleop"][i])), recording=self._rec)
             if data.get("policy") is not None:
                 rr.log(f"policy/{i + 1}", rr.Scalars(float(data["policy"][i])), recording=self._rec)
+
+
+class _StatsTracker:
+    def __init__(self):
+        self.start_time = time.time()
+        self.frames_sent = 0
+        self.frames_dropped = 0
+        self.queue_sizes = []
+        self.latencies = []
+
+    def record_send(self, queue_size: int, latency: float):
+        self.frames_sent += 1
+        self.queue_sizes.append(queue_size)
+        self.latencies.append(latency)
+
+    def record_drop(self):
+        self.frames_dropped += 1
+
+    def elapsed(self) -> float:
+        return time.time() - self.start_time
+
+    def summary(self) -> dict:
+        total = self.frames_sent + self.frames_dropped
+        return {
+            "elapsed_s": self.elapsed(),
+            "frames_sent": self.frames_sent,
+            "frames_dropped": self.frames_dropped,
+            "drop_rate_pct": (self.frames_dropped / total * 100) if total > 0 else 0,
+            "avg_fps": self.frames_sent / self.elapsed() if self.elapsed() > 0 else 0,
+            "avg_queue_size": np.mean(self.queue_sizes) if self.queue_sizes else 0,
+            "max_queue_size": max(self.queue_sizes) if self.queue_sizes else 0,
+            "avg_latency_ms": (np.mean(self.latencies) * 1000) if self.latencies else 0,
+        }
+
+
+def _generate_mock_data(frame_seq: int, joint_count: int = 16) -> dict:
+    image_vga = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+    image_720p = np.random.randint(0, 255, (720, 1280, 3), dtype=np.uint8)
+    image_1080p = np.random.randint(0, 255, (1080, 1920, 3), dtype=np.uint8)
+    t = frame_seq * 0.01
+    state = np.sin(t + np.arange(joint_count)) * 0.5
+    teleop = state + np.random.randn(joint_count) * 0.05
+    policy = state + np.random.randn(joint_count) * 0.02
+    state_value = float(np.sin(t * 2) * 0.5 + 0.5)
+
+    return {
+        "observation.images.vga": image_vga,
+        "observation.images.720p": image_720p,
+        "observation.images.1080p": image_1080p,
+        "observation.state": state,
+        "teleop": teleop,
+        "policy": policy,
+        "state_value": state_value,
+        "framestep": frame_seq,
+    }
+
+
+def _run_fps_phase(logger: RerunLogger, fps: int, duration_s: float, stats: _StatsTracker) -> None:
+    interval = 1.0 / fps
+    frame_seq = 0
+    phase_start = time.time()
+    last_report = time.time()
+
+    while time.time() - phase_start < duration_s:
+        send_time = time.time()
+        data = _generate_mock_data(frame_seq)
+        logger.log(data)
+
+        queue_size = logger._queue.qsize()
+        latency = time.time() - send_time
+        stats.record_send(queue_size, latency)
+
+        if time.time() - last_report >= 1.0:
+            print(
+                f"  {fps} FPS: sent={stats.frames_sent}, drop={stats.frames_dropped}, "
+                f"qsize={queue_size}, latency={latency * 1000:.1f}ms"
+            )
+            last_report = time.time()
+
+        frame_seq += 1
+        elapsed_in_frame = time.time() - send_time
+        sleep_time = max(0, interval - elapsed_in_frame)
+        time.sleep(sleep_time)
+
+
+def stress_test() -> None:
+    print("=" * 60)
+    print("RerunLogger Stress Test")
+    print("=" * 60)
+
+    with RerunLogger(url="rerun+http://172.20.76.73:9876/proxy", max_queue_size=20) as logger:
+        print("\nPhase 1: Steady 30 FPS for 15 seconds")
+        print("-" * 60)
+        stats1 = _StatsTracker()
+        _run_fps_phase(logger, 30, 15, stats1)
+
+        print("\nPhase 2: Variable FPS (10→20→30→40→50) for 15 seconds")
+        print("-" * 60)
+        stats2 = _StatsTracker()
+        fps_steps = [10, 20, 30, 40, 50]
+        step_duration = 15 / len(fps_steps)
+        for fps in fps_steps:
+            print(f"\n  Switching to {fps} FPS...")
+            _run_fps_phase(logger, fps, step_duration, stats2)
+
+        print("\nFlushing queue...")
+        logger.flush()
+
+        print("\n" + "=" * 60)
+        print("Final Results")
+        print("=" * 60)
+
+        s1 = stats1.summary()
+        print(f"\nPhase 1 (30 FPS, 15s):")
+        print(f"  Frames sent:     {s1['frames_sent']}")
+        print(f"  Frames dropped:  {s1['frames_dropped']}")
+        print(f"  Drop rate:       {s1['drop_rate_pct']:.2f}%")
+        print(f"  Actual FPS:      {s1['avg_fps']:.1f}")
+        print(f"  Avg queue size:  {s1['avg_queue_size']:.1f} (max={s1['max_queue_size']})")
+        print(f"  Avg latency:     {s1['avg_latency_ms']:.1f}ms")
+
+        s2 = stats2.summary()
+        print(f"\nPhase 2 (Variable FPS, 15s):")
+        print(f"  Frames sent:     {s2['frames_sent']}")
+        print(f"  Frames dropped:  {s2['frames_dropped']}")
+        print(f"  Drop rate:       {s2['drop_rate_pct']:.2f}%")
+        print(f"  Actual FPS:      {s2['avg_fps']:.1f}")
+        print(f"  Avg queue size:  {s2['avg_queue_size']:.1f} (max={s2['max_queue_size']})")
+        print(f"  Avg latency:     {s2['avg_latency_ms']:.1f}ms")
+
+        total_sent = s1["frames_sent"] + s2["frames_sent"]
+        total_dropped = s1["frames_dropped"] + s2["frames_dropped"]
+        total = total_sent + total_dropped
+        print(f"\nOverall:")
+        print(f"  Total frames:    {total}")
+        print(f"  Total dropped:   {total_dropped} ({total_dropped / total * 100:.2f}%)")
+        print("\nCheck Rerun viewer to verify visual display performance.")
+
+
+if __name__ == "__main__":
+    stress_test()
