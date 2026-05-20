@@ -18,6 +18,7 @@ import builtins
 import copy
 import logging
 import math
+import time
 from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict, Unpack
@@ -25,6 +26,7 @@ from typing import TYPE_CHECKING, Literal, TypedDict, Unpack
 import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import Tensor, nn
+from transformers.initialization import no_init_weights
 
 from lerobot.utils.import_utils import _transformers_available
 
@@ -387,11 +389,16 @@ class PaliGemmaWithExpertModel(
             adarms_cond_dim=action_expert_config.width if use_adarms[1] else None,
         )
 
-        self.paligemma = PaliGemmaForConditionalGenerationWithPiGemma(config=vlm_config_hf)
-        self.gemma_expert = PiGemmaForCausalLM(config=action_expert_config_hf)
-        self.gemma_expert.model.embed_tokens = None
+        t0 = time.perf_counter()
+        with no_init_weights():
+            self.paligemma = PaliGemmaForConditionalGenerationWithPiGemma(config=vlm_config_hf)
+            self.gemma_expert = PiGemmaForCausalLM(config=action_expert_config_hf)
+            self.gemma_expert.model.embed_tokens = None
+        print(f"[PaliGemmaWithExpertModel] Model initialization took {time.perf_counter() - t0:.2f}s.")
 
+        t0 = time.perf_counter()
         self.to_bfloat16_for_selected_params(precision)
+        print(f"[PaliGemmaWithExpertModel] Precision conversion took {time.perf_counter() - t0:.2f}s.")
         self._set_requires_grad()
 
     def to_bfloat16_for_selected_params(self, precision: Literal["bfloat16", "float32"] = "bfloat16"):
@@ -923,13 +930,17 @@ class PI05Policy(PreTrainedPolicy):
 
         # Initialize the core PI05 model
         self.init_rtc_processor()
+        t0 = time.perf_counter()
         self.model = PI05Pytorch(config, rtc_processor=self.rtc_processor)
+        print(f"[PI05Policy] Taken {time.perf_counter() - t0:.3f}s to instantiate PI05Pytorch")
 
         # Enable gradient checkpointing if requested
         if config.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
 
+        t0 = time.perf_counter()
         self.model.to(config.device)
+        print(f"[PI05Policy] Taken {time.perf_counter() - t0:.3f}s to move model to {config.device}")
 
         self.reset()
 
@@ -982,6 +993,7 @@ class PI05Policy(PreTrainedPolicy):
             try:
                 from transformers.utils import cached_file
 
+                t0 = time.perf_counter()
                 resolved_file = cached_file(
                     pretrained_name_or_path,
                     "model.safetensors",
@@ -996,7 +1008,9 @@ class PI05Policy(PreTrainedPolicy):
                 from safetensors.torch import load_file
 
                 original_state_dict = load_file(resolved_file)
-                print("✓ Loaded state dict from model.safetensors")
+                print(f"[PI05Policy] Taken {time.perf_counter() - t0:.3f}s to load state dict")
+
+                print(f"✅ Loaded state dict ({len(original_state_dict)} keys) from {resolved_file}")
             except Exception as e:
                 print(f"Could not load state dict from remote files: {e}")
                 print("Returning model without loading pretrained weights")
@@ -1021,7 +1035,9 @@ class PI05Policy(PreTrainedPolicy):
                 print(f"Remapped {remap_count} state dict keys")
 
             # Load the remapped state dict into the model
+            t0 = time.perf_counter()
             missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=strict)
+            print(f"[PI05Policy] Taken {time.perf_counter() - t0:.3f} s to populate model with state dict")
 
             if missing_keys:
                 print(f"Missing keys when loading state dict: {len(missing_keys)} keys")

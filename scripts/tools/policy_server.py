@@ -120,9 +120,10 @@ class PolicyServer:
         print(f'[bright_yellow]Loading model: "{config.pretrained_name_or_path}" ...[/bright_yellow]')
         t0 = time.perf_counter()
         self.policy = policy_class.from_pretrained(config.pretrained_name_or_path)
-        self.policy.to(config.policy_device)
         print(self.policy.config)
-        print(f"Taken {time.perf_counter() - t0:.2f} seconds to put policy on {config.policy_device}.")
+        print(
+            f"[bright_green]Taken {time.perf_counter() - t0:.2f}s to put policy on {config.policy_device}.[/bright_green]"
+        )
         self.chunk_size = config.actions_per_chunk
         self.action_dim = 0
         # Make preprocessor and postprocessor
@@ -167,8 +168,8 @@ class PolicyServer:
             obs["task"] = "do nothing"
             output = self.predict_action_chunk(obs, i0=0)
         elapsed = time.perf_counter() - start_time
-        print(f"[bright_yellow]Taken {elapsed:.2f} seconds to warm up the policy.[/bright_yellow]")
-        print(f"[bright_yellow]Output shape: {output[next(iter(output))].shape}[/bright_yellow]")
+        print(f"[bright_green]Taken {elapsed:.2f}s to warm up the policy.[/bright_green]")
+        print(f"[bright_green]Output shape: {output[next(iter(output))].shape}[/bright_green]")
 
     @property
     def policy_image_features(self):

@@ -179,3 +179,5 @@ outputs/
 *.part
 
 .zread
+.claude/
+CLAUDE.md
