@@ -50,7 +50,7 @@ class PolicyClientConfig:
     port: int = field(default=8001, metadata={"help": "Server port"})
 
     # The threshold for the chunk size before sending a new observation to the server
-    chunk_size_threshold: float = field(default=0.1, metadata={"help": "Threshold for chunk size"})
+    chunk_size_threshold: float = field(default=1.0, metadata={"help": "Threshold for chunk size"})
 
     # Aggregate function configuration
     aggregate_fn_name: str = field(

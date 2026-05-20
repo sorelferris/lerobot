@@ -394,11 +394,11 @@ class PaliGemmaWithExpertModel(
             self.paligemma = PaliGemmaForConditionalGenerationWithPiGemma(config=vlm_config_hf)
             self.gemma_expert = PiGemmaForCausalLM(config=action_expert_config_hf)
             self.gemma_expert.model.embed_tokens = None
-        print(f"[PaliGemmaWithExpertModel] Model initialization took {time.perf_counter() - t0:.2f}s.")
+        print(f"[PaliGemmaWithExpertModel] Taken {time.perf_counter() - t0:.2f}s to initialize model.")
 
         t0 = time.perf_counter()
         self.to_bfloat16_for_selected_params(precision)
-        print(f"[PaliGemmaWithExpertModel] Precision conversion took {time.perf_counter() - t0:.2f}s.")
+        print(f"[PaliGemmaWithExpertModel] Taken {time.perf_counter() - t0:.2f}s to convert precision.")
         self._set_requires_grad()
 
     def to_bfloat16_for_selected_params(self, precision: Literal["bfloat16", "float32"] = "bfloat16"):
@@ -932,7 +932,7 @@ class PI05Policy(PreTrainedPolicy):
         self.init_rtc_processor()
         t0 = time.perf_counter()
         self.model = PI05Pytorch(config, rtc_processor=self.rtc_processor)
-        print(f"[PI05Policy] Taken {time.perf_counter() - t0:.3f}s to instantiate PI05Pytorch")
+        print(f"[PI05Policy] Taken {time.perf_counter() - t0:.2f}s to instantiate PI05Pytorch")
 
         # Enable gradient checkpointing if requested
         if config.gradient_checkpointing:
@@ -940,7 +940,7 @@ class PI05Policy(PreTrainedPolicy):
 
         t0 = time.perf_counter()
         self.model.to(config.device)
-        print(f"[PI05Policy] Taken {time.perf_counter() - t0:.3f}s to move model to {config.device}")
+        print(f"[PI05Policy] Taken {time.perf_counter() - t0:.2f}s to move model to {config.device}")
 
         self.reset()
 
@@ -1008,7 +1008,7 @@ class PI05Policy(PreTrainedPolicy):
                 from safetensors.torch import load_file
 
                 original_state_dict = load_file(resolved_file)
-                print(f"[PI05Policy] Taken {time.perf_counter() - t0:.3f}s to load state dict")
+                print(f"[PI05Policy] Taken {time.perf_counter() - t0:.2f}s to load state dict")
 
                 print(f"✅ Loaded state dict ({len(original_state_dict)} keys) from {resolved_file}")
             except Exception as e:
@@ -1037,7 +1037,7 @@ class PI05Policy(PreTrainedPolicy):
             # Load the remapped state dict into the model
             t0 = time.perf_counter()
             missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=strict)
-            print(f"[PI05Policy] Taken {time.perf_counter() - t0:.3f} s to populate model with state dict")
+            print(f"[PI05Policy] Taken {time.perf_counter() - t0:.2f} s to populate model with state dict")
 
             if missing_keys:
                 print(f"Missing keys when loading state dict: {len(missing_keys)} keys")
