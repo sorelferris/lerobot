@@ -14,7 +14,7 @@ class ReplayBotConfig:
     # Root directory where the dataset will be stored (e.g. 'dataset/path').
     root: str | Path | None = None
     # Index of the episode(s) to replay. Can be a single episode index or a comma-separated list of indices (e.g. "0,1,2").
-    episode: str | None = None  # If None, replay all episodes in the dataset.
+    episodes: str | None = None  # If None, replay all episodes in the dataset.
     # Robot type
     type: str = "replay_bot"
 
@@ -34,7 +34,7 @@ class ReplayBot:
         self.ds_meta = LeRobotDatasetMetadata(config.repo_id, root=config.root)
         self.camera_keys = tuple(self.ds_meta.camera_keys)
         self.total_episodes = self.ds_meta.total_episodes
-        self.episodes = self._parse_episodes(config.episode, self.ds_meta.total_episodes)
+        self.episodes = self._parse_episodes(config.episodes, self.ds_meta.total_episodes)
 
         self.dataset = None  # Current episode dataset
         self.frame_index = 0  # Current frame index within the loaded episode

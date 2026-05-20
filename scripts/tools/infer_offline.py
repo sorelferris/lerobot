@@ -15,6 +15,7 @@ python scripts/tools/infer_offline.py \
     --policy.port 8001 \
     --robot.repo_id record_0429 \
     --robot.root data/train_data/lerobot_v3.0/record_0429 \
+    --robot.episodes 0,1,2 \
     --rerun_url rerun+http://172.20.76.73:9876/proxy
 """
 
