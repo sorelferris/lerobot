@@ -91,20 +91,15 @@ def infer_offline(config: InferOfflineConfig):
                     policy_action = policy.require_action(observation).numpy()
                     policy_time = time.perf_counter() - t0
 
-                    t0 = time.perf_counter()
                     teleop_action = robot.get_teleop_action()["action"].numpy()
-                    teleop_time = time.perf_counter() - t0
 
                     # Store actions for later comparison
-                    t0 = time.perf_counter()
                     teleop_actions.append(teleop_action)
                     policy_actions.append(policy_action)
-                    store_time = time.perf_counter() - t0
 
                     state_value = robot.get_state_value()
 
                     # Log to Rerun
-                    t0 = time.perf_counter()
                     if logger is not None:
                         data = {
                             **observation,
@@ -113,12 +108,9 @@ def infer_offline(config: InferOfflineConfig):
                             "state_value": state_value,
                         }
                         logger.log(data)
-                    log_time = time.perf_counter() - t0
 
                     # Send action to the robot (which will advance to the next frame)
-                    t0 = time.perf_counter()
                     robot.send_action(action=policy_action)
-                    act_time = time.perf_counter() - t0
                     robot.step()  # Advance to the next frame
                     frame_count += 1
 
@@ -135,8 +127,6 @@ def infer_offline(config: InferOfflineConfig):
                             f"Replaying {len(policy_actions)}/{robot.dataset.num_frames} "
                             f"(frame={frame_interval * 1000:.2f}ms, fps={real_fps:.2f}, "
                             f"obs={obs_time * 1000:.2f}ms, policy={policy_time * 1000:.2f}ms, "
-                            f"teleop={teleop_time * 1000:.2f}ms, store={store_time * 1000:.2f}ms, "
-                            f"log={log_time * 1000:.2f}ms, act={act_time * 1000:.2f}ms)"
                         ),
                     )
 
