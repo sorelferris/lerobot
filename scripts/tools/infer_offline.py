@@ -27,11 +27,11 @@ import draccus
 import numpy as np
 from compare_actions import compare_actions
 from policy_client import PolicyClient, PolicyClientConfig
-from rerun_utils import RerunLogger
 from rich import print
 from rich.progress import Progress
 
 from lerobot.utils.replay_bot import ReplayBot, ReplayBotConfig
+from lerobot.utils.rerun_utils import RerunLogger
 
 
 @dataclass
