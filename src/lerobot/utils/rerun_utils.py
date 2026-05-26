@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import collections
 import queue
 import threading
 import time
@@ -7,6 +8,13 @@ import uuid
 import numpy as np
 import rerun as rr
 import torch
+
+# Constants for overlay layout (avoid magic numbers)
+_OVERLAY_X0, _OVERLAY_X1 = 0.05, 0.95
+_OVERLAY_Y0, _OVERLAY_Y1 = 0.75, 0.9
+_LABEL_OFFSET = np.array([8.0, -8.0], dtype=np.float32)
+_OVERLAY_COLOR = (32, 220, 128)
+_MAX_JOINT_COLS = 4
 
 
 class RerunLogger:
@@ -25,20 +33,18 @@ class RerunLogger:
     """
 
     _CMD_LOG = 0
-    _CMD_TIME_SEQ = 1
-    _CMD_BLUEPRINT = 2
-    _CMD_STOP = 3
-    _CMD_NEW_RECORDING = 4
+    _CMD_BLUEPRINT = 1
+    _CMD_STOP = 2
+    _CMD_NEW_RECORDING = 3
 
-    def __init__(self, url: str, max_queue_size: int = 10, y_range: tuple[float, float] | None = None):
+    def __init__(self, url: str, max_queue_size: int = 3):
         self._url = url
-        self._y_range = y_range  # None means auto-scale
         self._joint_count: int | None = None
         self._blueprint_sent = False
         self._next_frame_seq = 0
-        # Camera slots are inferred from available observation.images.* keys.
         self._camera_slots: list[str] = []
-        self._state_value_history: list[float] = []
+        self._state_value_history: collections.deque[float] = collections.deque(maxlen=1000)
+        self._lock = threading.Lock()
 
         # Isolated recording stream - never touches global rr.init() state.
         self._rec = rr.RecordingStream(
@@ -76,7 +82,6 @@ class RerunLogger:
                     origin="/",
                     contents=[f"states/{joint_no}", f"teleop/{joint_no}", f"policy/{joint_no}"],
                     name=f"joint_{joint_no}",
-                    axis_y=rr.blueprint.ScalarAxis(range=self._y_range) if self._y_range else None,
                 )
             )
 
@@ -93,9 +98,9 @@ class RerunLogger:
         if joint_views:
             bottom_row = rr.blueprint.Grid(
                 *joint_views,
-                grid_columns=min(4, len(joint_views)),
+                grid_columns=min(_MAX_JOINT_COLS, len(joint_views)),
                 row_shares=[1],
-                column_shares=[1] * min(4, len(joint_views)),
+                column_shares=[1] * min(_MAX_JOINT_COLS, len(joint_views)),
             )
 
         if top_row and bottom_row:
@@ -140,9 +145,10 @@ class RerunLogger:
         except queue.Full:
             try:
                 self._queue.get_nowait()
-                self._queue.task_done()
             except queue.Empty:
                 pass
+            else:
+                self._queue.task_done()
             self._queue.put_nowait((self._CMD_LOG, data))
 
     def switch_record(self) -> None:
@@ -193,11 +199,14 @@ class RerunLogger:
                 if cmd == self._CMD_STOP:
                     return
                 elif cmd == self._CMD_LOG:
-                    self._log_sync(item[1])
+                    try:
+                        self._log_sync(item[1])
+                    except Exception:
+                        # Log error but keep worker alive — rerun connection may recover
+                        print(f"[RerunLogger] _log_sync error: {item[0][:80]}...", flush=True)
                 elif cmd == self._CMD_BLUEPRINT:
                     rr.send_blueprint(item[1], recording=self._rec)
                 elif cmd == self._CMD_NEW_RECORDING:
-                    # Disconnect old recording and create a new one with fresh recording_id
                     rr.disconnect(recording=self._rec)
                     self._rec = rr.RecordingStream(
                         application_id="lerobot",
@@ -207,7 +216,8 @@ class RerunLogger:
                     )
                     self._connect_stream()
                     self._next_frame_seq = 0
-                    self._state_value_history.clear()
+                    with self._lock:
+                        self._state_value_history.clear()
             finally:
                 self._queue.task_done()
 
@@ -231,15 +241,16 @@ class RerunLogger:
         return arr
 
     def _compute_state_value_points(self, image: np.ndarray) -> np.ndarray | None:
-        if image.ndim < 2 or len(self._state_value_history) < 2:
-            return None
-
         height, width = image.shape[0], image.shape[1]
-        x0, x1 = width * 0.05, width * 0.95
-        y0, y1 = height * 0.75, height * 0.9
-        values = np.asarray(self._state_value_history, dtype=np.float32)
-        v_min = float(values.min())
-        v_max = float(values.max())
+        x0, x1 = width * _OVERLAY_X0, width * _OVERLAY_X1
+        y0, y1 = height * _OVERLAY_Y0, height * _OVERLAY_Y1
+
+        with self._lock:
+            if len(self._state_value_history) < 2:
+                return None
+            values = np.asarray(self._state_value_history, dtype=np.float32)
+
+        v_min, v_max = float(values.min()), float(values.max())
         if abs(v_max - v_min) < 1e-8:
             ys = np.full_like(values, (y0 + y1) * 0.5)
         else:
@@ -257,7 +268,8 @@ class RerunLogger:
 
         state_value = data.get("state_value")
         if state_value is not None:
-            self._state_value_history.append(float(np.asarray(state_value).reshape(-1)[0]))
+            with self._lock:
+                self._state_value_history.append(float(np.asarray(state_value).reshape(-1)[0]))
 
         for slot_name in self._camera_slots:
             if data.get(slot_name) is None:
@@ -270,16 +282,18 @@ class RerunLogger:
             if points is not None:
                 rr.log(
                     f"overlays/{slot_name}/state_value_curve",
-                    rr.LineStrips2D([points], colors=[(32, 220, 128)], radii=[1.5]),
+                    rr.LineStrips2D([points], colors=[_OVERLAY_COLOR], radii=[1.5]),
                     recording=self._rec,
                 )
-                latest_label_pos = points[-1] + np.array([8.0, -8.0], dtype=np.float32)
+                with self._lock:
+                    latest_value = self._state_value_history[-1]
+                latest_label_pos = points[-1] + _LABEL_OFFSET
                 rr.log(
                     f"overlays/{slot_name}/state_value_label",
                     rr.Points2D(
                         [latest_label_pos],
-                        colors=[(32, 220, 128)],
-                        labels=[f"{self._state_value_history[-1]:.3f}"],
+                        colors=[_OVERLAY_COLOR],
+                        labels=[f"{latest_value:.3f}"],
                         show_labels=True,
                         radii=[0.0],
                     ),
