@@ -104,4 +104,4 @@ class ReplayBot:
         """Mock state value inference for demonstration purposes."""
         if self.frame_cache is None:
             self.frame_cache = self.dataset[self.frame_index]
-        return self.frame_cache["complementary_info.value"]
+        return self.frame_cache.get("complementary_info.value", 0.0)

@@ -26,4 +26,5 @@ lerobot-record \
     --dataset.repo_id="sorel/${dataset}" \
     --dataset.num_episodes=50 \
     --dataset.single_task="$task" \
+    --dataset.streaming_encoding=true \
     --dataset.push_to_hub=true
