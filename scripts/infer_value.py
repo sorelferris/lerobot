@@ -705,13 +705,9 @@ def run_value_inference_pipeline(
 
 
 @parser.wrap()
-def value_infer(cfg: ValueInferencePipelineConfig):
-    return run_value_inference_pipeline(cfg)
-
-
-def main():
+def main(cfg: ValueInferencePipelineConfig):
     register_third_party_plugins()
-    value_infer()
+    run_value_inference_pipeline(cfg)
 
 
 if __name__ == "__main__":
