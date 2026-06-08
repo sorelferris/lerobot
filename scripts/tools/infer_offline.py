@@ -19,12 +19,15 @@ python scripts/tools/infer_offline.py \
     --rerun_url rerun+http://172.20.76.73:9876/proxy
 """
 
+import pickle  # nosec
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import draccus
 import numpy as np
+import torch
+import zmq
 from compare_actions import compare_actions
 from policy_client import PolicyClient, PolicyClientConfig
 from rich import print
@@ -46,6 +49,47 @@ class InferOfflineConfig:
     save_dir: str = "outputs/infer_offline"
     # Optional: Remote Rerun viewer URL. If None, use local viewer.
     rerun_url: str | None = None
+    # Optional: Value server host. If None, value inference is disabled.
+    value_host: str | None = None
+    # Value server port (used only when value_host is not None).
+    value_port: int = 8000
+
+
+@dataclass
+class ValueClientConfig:
+    host: str = "localhost"
+    port: int = 8002
+
+
+class ValueClient:
+    def __init__(self, config: ValueClientConfig):
+        self.config = config
+        self.context = zmq.Context()
+        self._socket = self.context.socket(zmq.REQ)
+        self._socket.connect(f"tcp://{self.config.host}:{self.config.port}")
+
+    def stop(self) -> None:
+        self._socket.close(linger=0)
+        self.context.term()
+
+    def _request(self, payload: dict) -> dict:
+        self._socket.send(pickle.dumps(payload))
+        message = pickle.loads(self._socket.recv())
+        if not isinstance(message, dict):
+            raise RuntimeError(f"Invalid response type from value server: {type(message).__name__}")
+        if message.get("error"):
+            raise RuntimeError(f"Value server error: {message['error']}")
+        return message
+
+    def require_value(self, observation: dict) -> float:
+        response = self._request({"observation": observation})
+        value = response.get("value")
+        if value is None:
+            raise RuntimeError("Value server response missing 'value'")
+
+        if isinstance(value, torch.Tensor):
+            return float(value.reshape(-1)[0].item())
+        return float(np.asarray(value).reshape(-1)[0])
 
 
 @draccus.wrap()
@@ -54,6 +98,11 @@ def infer_offline(config: InferOfflineConfig):
 
     robot = ReplayBot(config.robot)
     policy = PolicyClient(config.policy)
+    value_client = (
+        ValueClient(ValueClientConfig(host=config.value_host, port=config.value_port))
+        if config.value_host is not None
+        else None
+    )
 
     # Create output directory if it doesn't exist
     save_path = Path(config.save_dir)
@@ -72,7 +121,8 @@ def infer_offline(config: InferOfflineConfig):
 
             policy_actions = []
             teleop_actions = []
-            frame_count = 0
+            predicted_values = []
+            dataset_values = []
 
             if logger:
                 logger.switch_record()
@@ -91,13 +141,18 @@ def infer_offline(config: InferOfflineConfig):
                     policy_action = policy.require_action(observation).numpy()
                     policy_time = time.perf_counter() - t0
 
+                    value_time = 0.0
+                    predicted_value = None
+                    if value_client is not None:
+                        t0 = time.perf_counter()
+                        predicted_value = value_client.require_value(observation)
+                        value_time = time.perf_counter() - t0
+
                     teleop_action = robot.get_teleop_action()["action"].numpy()
 
                     # Store actions for later comparison
                     teleop_actions.append(teleop_action)
                     policy_actions.append(policy_action)
-
-                    state_value = robot.get_state_value()
 
                     # Log to Rerun
                     if logger is not None:
@@ -105,14 +160,14 @@ def infer_offline(config: InferOfflineConfig):
                             **observation,
                             "teleop": teleop_action,
                             "policy": policy_action,
-                            "state_value": state_value,
+                            "state_value": predicted_value + 1,
+                            "framestep": len(policy_actions) - 1,
                         }
                         logger.log(data)
 
                     # Send action to the robot (which will advance to the next frame)
                     robot.send_action(action=policy_action)
                     robot.step()  # Advance to the next frame
-                    frame_count += 1
 
                     # Busy-wait to maintain the desired fps
                     time.sleep(max(0.0, 1.0 / fps - (time.perf_counter() - start)))
@@ -127,11 +182,14 @@ def infer_offline(config: InferOfflineConfig):
                             f"Replaying {len(policy_actions)}/{robot.dataset.num_frames} "
                             f"(frame={frame_interval * 1000:.2f}ms, fps={real_fps:.2f}, "
                             f"obs={obs_time * 1000:.2f}ms, policy={policy_time * 1000:.2f}ms, "
+                            f"value={value_time * 1000:.2f}ms, "
                         ),
                     )
 
             policy_actions = np.array(policy_actions)
             teleop_actions = np.array(teleop_actions)
+            predicted_values = np.array(predicted_values, dtype=np.float32)
+            dataset_values = np.array(dataset_values, dtype=np.float32)
             print(f"{teleop_actions.shape=}, {policy_actions.shape=}, {robot.dataset.num_frames=}")
 
             # Save action data for later comparison
@@ -153,6 +211,8 @@ def infer_offline(config: InferOfflineConfig):
     finally:
         if logger:
             logger.stop()
+        if value_client:
+            value_client.stop()
         policy.stop()
 
 
