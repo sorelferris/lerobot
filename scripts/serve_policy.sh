@@ -1,11 +1,12 @@
 #!/bin/bash
 
-usage="$0 <policy_type> <pretrained_name_or_path>"
+usage="$0 <policy_type> <pretrained_name_or_path> <port>"
 
 policy_type="$1"
 ckpt="$2"
+port="$3"
 
-if [ -z "$ckpt" ] || [ -z "$policy_type" ]; then
+if [ -z "$ckpt" ] || [ -z "$policy_type" ] || [ -z "$port" ]; then
     echo "Usage: $usage"
     exit 1
 fi
@@ -21,7 +22,7 @@ rename_map='{}'
 
 python scripts/tools/policy_server.py \
     --host=0.0.0.0 \
-    --port=8001 \
+    --port="$port" \
     --policy_type="$policy_type" \
     --pretrained_name_or_path="$ckpt" \
     --policy_device=cuda \

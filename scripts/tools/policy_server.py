@@ -117,6 +117,7 @@ class PolicyServer:
         # Load policy
         policy_class = get_policy_class(config.policy_type)
         self.policy_name = policy_class.__name__
+        self.ckpt = config.pretrained_name_or_path
         print(f'[bright_yellow]Loading model: "{config.pretrained_name_or_path}" ...[/bright_yellow]')
         t0 = time.perf_counter()
         self.policy = policy_class.from_pretrained(config.pretrained_name_or_path)
@@ -247,12 +248,9 @@ class PolicyServer:
                         self.socket.send(b"")
                         continue
 
-                    if message.get("__request_policy_name__", False):
-                        self.socket.send(pickle.dumps({"policy_name": self.policy_name}))
-                        continue
-
-                    if message.get("__request_policy_config__", False):
-                        self.socket.send(pickle.dumps({"policy_config": self.policy_config}))
+                    if message.get("__request_policy_meta__", False):
+                        meta = {"name": self.policy_name, "ckpt": self.ckpt, **self.policy_config}
+                        self.socket.send(pickle.dumps({"policy_meta": meta}))
                         continue
 
                     observation = message.get("observation", {})
