@@ -237,10 +237,13 @@ class PolicyServer:
                     if self.socket not in events:
                         continue
 
-                    payload = self.socket.recv()
-
                     unpac_time = time.perf_counter()
-                    message = pickle.loads(payload)
+                    try:
+                        payload = self.socket.recv()
+                        message = pickle.loads(payload)
+                    except Exception as e:
+                        print(f"[bright_red]Failed to receive or unpickle message: {e}[/bright_red]")
+                        continue
                     unpac_time = (time.perf_counter() - unpac_time) * 1000  # convert to ms
 
                     if not isinstance(message, dict):
@@ -249,6 +252,9 @@ class PolicyServer:
                         continue
 
                     if message.get("__request_policy_meta__", False):
+                        client_endpoint = self.socket.getsockopt(zmq.LAST_ENDPOINT).decode()
+                        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                        print(f"[bold cyan]{timestamp}: Connected from {client_endpoint}[/bold cyan]")
                         meta = {"name": self.policy_name, "ckpt": self.ckpt, **self.policy_config}
                         self.socket.send(pickle.dumps({"policy_meta": meta}))
                         continue
