@@ -242,12 +242,14 @@ class PolicyServer:
                         payload = self.socket.recv()
                         message = pickle.loads(payload)
                     except Exception as e:
-                        print(f"[bright_red]Failed to receive or unpickle message: {e}[/bright_red]")
+                        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                        print(f"[bold red]{timestamp}: Failed to receive or unpickle message: {e}[/bold red]")
                         continue
                     unpac_time = (time.perf_counter() - unpac_time) * 1000  # convert to ms
 
                     if not isinstance(message, dict):
-                        print(f"Invalid message format: expected dict, got {type(message).__name__}")
+                        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                        print(f"[bold red]{timestamp}: Invalid message: {type(message).__name__}[/bold red]")
                         self.socket.send(b"")
                         continue
 
