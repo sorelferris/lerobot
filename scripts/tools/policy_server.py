@@ -244,6 +244,7 @@ class PolicyServer:
                     except Exception as e:
                         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
                         print(f"[bold red]{timestamp}: Failed to receive or unpickle message: {e}[/bold red]")
+                        self.socket.send(b"")
                         continue
                     unpac_time = (time.perf_counter() - unpac_time) * 1000  # convert to ms
 
