@@ -104,6 +104,9 @@ class PolicyServerConfig:
             if not (Path(self.pretrained_name_or_path) / "config.json").exists():
                 print(f"[bright_red]Invalid checkpoint path: {self.pretrained_name_or_path}.[/bright_red]")
                 raise ValueError(f"Config file does not exist: {self.pretrained_name_or_path}")
+        else:
+            print(f"[bright_red]Invalid checkpoint path: {self.pretrained_name_or_path}.[/bright_red]")
+            raise ValueError(f"Invalid checkpoint path: {self.pretrained_name_or_path}.[/bright_red]")
 
         if not self.policy_device:
             raise ValueError("policy_device cannot be empty")
